@@ -134,6 +134,41 @@ zwischen „abgeleitet" und „angefasst" ist damit sichtbar statt geraten.
 
 ---
 
+## Signaturen: die Grenze, die man nicht überschreiten kann
+
+Volle C2PA-Validierung heißt: CBOR/COSE-Struktur parsen, X.509-Kette zu einem
+Trust Anchor bauen, Revocation prüfen (CRL/OCSP über Netz), RFC-3161-Zeitstempel
+verifizieren. **Das braucht ein Netzwerk und eine Vertrauensliste.** Wer behauptet,
+das offline zu tun, lügt.
+
+Die Arbeit ist deshalb entlang einer Linie geteilt, die sich ehrlich ziehen lässt:
+
+| VERIFIER (braucht Netz) | POLICY (braucht nichts) |
+|---|---|
+| Kette zu einem Trust Anchor bauen | Ist der Anchor einer, dem WIR trauen? |
+| Revocation prüfen (CRL / OCSP) | Ist der Chain-Zustand für uns akzeptabel? |
+| RFC-3161-Zeitstempel verifizieren | Behandeln wir „unbekannt" als Fehler? |
+| Kryptografische Signatur prüfen | Wieviel Uhr-Abweichung erlauben wir? |
+
+Der Verifier ist eine **injizierte Schnittstelle**, keine fehlende Funktion. Die
+Policy-Schicht ist vollständig gebaut und geprüft.
+
+**Die Regel, die alles trägt:** Ein fehlgeschlagener *oder* unbestimmter Check
+erzeugt **nie** `verified`. Unbestimmtes Verhalten schlägt geschlossen fehl — eine
+unauflösbare Kette, ein abgelaufenes Zertifikat und ein Verifier, der schlicht
+eine Exception wirft, landen bei höchstens `claimed`.
+
+**`unknown` und `invalid` sind verschiedene Aussagen.** Sie zu verschmelzen würde
+aus „wir konnten nicht prüfen" ein „wir haben geprüft, es ist gefälscht" machen.
+Eine strikte Policy *darf* `unknown` als Fehler behandeln — aber der Grund benennt
+dann die Policy, statt die Signatur für gefälscht zu erklären.
+
+Die Trust-Liste steht **nicht im Record**: Welchem Aussteller ein Prüfer traut,
+ist seine Entscheidung. Ein Record, der sagt „signiert von X", ist eine Tatsache.
+Ein Record, der sagt „X ist vertrauenswürdig", wäre eine Meinung.
+
+---
+
 ## Der Record
 
 ```json
@@ -180,6 +215,7 @@ in **Beobachtung** und **Bewertung**.
 | Provenance | Beobachtung | ja, als Beleg |
 | Identity | Beobachtung | ja, als Verweis |
 | Evidence | Beobachtung | ja, als Liste |
+| Verification | Beobachtung | ja, als Policy des Prüfers |
 | Generation claim | Behauptung | ja, getrennt geführt |
 | Derivation | Erklärung | ja, verifier-aufgelöst |
 | **Trust** | Bewertung | **nein** — Funktion des Prüfers |
@@ -193,8 +229,14 @@ Stufe 7 tot, egal wie offen die Spezifikation aussieht.
 
 ## Was läuft
 
-Der Prototyp ist gebaut und geprüft. **14 von 14** Testfällen in der
-Konformitätsliste, **16 von 16** im Ableitungs-Szenario, sieben Invarianten.
+Der Prototyp ist gebaut und geprüft. **48 Testfälle in drei Suiten, zwölf
+Invarianten.**
+
+```
+conformance.mjs      passed 14/14
+derivation.test.mjs  passed 16/16
+signature.test.mjs   passed 18/18
+```
 
 ```
 vector              verdict        origin     integrity  generation
@@ -220,6 +262,11 @@ inv  unsigned claim never downgrades a signed subject  holds
 inv  derivation moves only integrity                   holds
 inv  derivation never grants origin                    holds
 inv  unresolvable edit stays MODIFIED                  holds
+inv  nothing non-verified is reported as verified      holds
+inv  unknown stays distinct from invalid               holds
+inv  a throwing verifier never verifies                holds
+inv  an untrusted anchor never verifies                holds
+inv  an expired chain never verifies by default        holds
 ```
 
 Die zwei Zeilen, die zusammen gelesen werden müssen: `claim-plus-signer` und
@@ -228,11 +275,14 @@ Verdikte. Die Behauptung selbst bewegt nichts.
 
 | Datei | Zweck |
 |---|---|
-| `engine.js` | Referenzimplementierung, drei Achsen, keine Abhängigkeiten |
+| `engine.js` | Record-Ableitung aus geprüften Fakten |
 | `derivation.js` | Ableitungs-Pipeline mit Herkunftskette |
+| `signature.js` | Signatur-Policy und Verifier-Schnittstelle |
+| `verifier-bridge.js` | Brücke: Verifier-Antwort → Record-Evidence |
 | `index.html` | Bedienbare Demo — Datei wird lokal gehasht, verlässt den Browser nicht |
 | `conformance.mjs` | Konformitätsliste, in sich geschlossen |
 | `derivation.test.mjs` | Ableitungs-Suite: Scan-Szenario, Ende zu Ende |
+| `signature.test.mjs` | Signatur-Policy-Suite: fail closed |
 | `record-0.2.schema.json` | JSON Schema 2020-12 |
 | `vectors.js` | Testvektoren, einer pro Status |
 
@@ -242,10 +292,8 @@ Verdikte. Die Behauptung selbst bewegt nichts.
 
 Ehrlich, weil diese Liste im Gespräch als Erstes geprüft wird.
 
-- **Signaturprüfung.** C2PA-Manifeste sind CBOR/COSE-Strukturen mit X.509-Ketten.
-  Verifizieren braucht Vertrauensliste, Chain-Building und Zeitstempel-Autorität —
-  also Netzwerk und Infrastruktur. Die Engine konsumiert heute das *Ergebnis*
-  einer Prüfung (`state`, `chain`) und passt damit auf jeden Verifier.
+- **Ein konkreter C2PA-Verifier.** Die Schnittstelle ist definiert und getestet,
+  ein echter Verifier (Netz, Revocation, Zeitstempel) ist der nächste Bauabschnitt.
 - **Derivation über Record-Grenzen.** Heute löst ein Verifier gegen seinen
   eigenen Store auf. Für plattformübergreifende Ketten braucht es eine
   Abfrage-Semantik, nicht nur einen Map-Zugriff.
@@ -284,7 +332,9 @@ bauen. Ein offener Standard heißt, dass die eigene Existenz verzichtbar wird.
 3. **Identität ist ein Verweis**, kein Wert — der Prüfer löst ihn auf.
 4. **Eine Ableitung erbt keine Herkunft.** Sie erklärt eine Beziehung, sie
    beweist sie nicht.
-5. **Der Standard ist selbst verzichtbar.** Wer ihn liest, braucht von uns
+5. **Unbestimmtes Verhalten schlägt geschlossen fehl.** Ein fehlgeschlagener
+   oder unbekannter Check erzeugt nie `verified`.
+6. **Der Standard ist selbst verzichtbar.** Wer ihn liest, braucht von uns
    keine Lizenz und keine Auszeichnung.
 
 ---
