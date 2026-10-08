@@ -87,7 +87,7 @@ Und: **Der Fingerabdruck kann einen Status nie anheben.**
 
 ---
 
-## Vier Module, fünf Fragen
+## Module, und die Frage, die jedes beantwortet
 
 | Modul | Frage |
 |---|---|
@@ -96,6 +96,10 @@ Und: **Der Fingerabdruck kann einen Status nie anheben.**
 | `engine.js` | Gegeben geprüfte Fakten — was ist der Record? |
 | `derivation.js` | Ist ein verändertes Byte ein Transform oder eine Manipulation? |
 | `fingerprint.js` | Ist der Inhalt der Inhalt, der er zu sein behauptet? |
+| `c2pa-verifier.js` | Was sagt das Manifest über Signatur und Erzeugung? |
+| `c2pa-providers.js` | Signatur, Kette, Zeitstempel — drei Provider |
+| `c2pa-transport.js` | Wie kommt die Netz-Antwort in den Record? |
+| `c2pa-tsr.js` | **Ist der Zeitstempel bewiesen oder nur behauptet?** |
 
 ---
 
@@ -139,6 +143,48 @@ erzeugt **nie** `verified`. `unknown` und `invalid` sind verschiedene Aussagen.
 
 ---
 
+## Der Zeitstempel: zwei Schritte, die man nicht verschmelzen darf
+
+Ein RFC-3161-Zeitstempel sieht wie ein Ergebnis aus und ist zwei Dinge:
+
+```
+1. STATUS      Die Autorität hat "granted" geantwortet.
+2. TSA-PROOF   Die CMS-Signatur hält gegen den TSA-Schlüssel, über
+               Attribute, die die TSTInfo decken, deren messageImprint
+               die Signaturbytes deckt, die man bekommen hat.
+```
+
+Schritt 1 allein ist eine **Behauptung eines Dritten**. Erst Schritt 2 ist ein
+**Nachweis**. `c2pa-tsr.js` trennt beide und prüft der Reihe nach:
+
+| Prüfung | Scheitert bei |
+|---|---|
+| `status` | Antwort ohne `granted` |
+| `token` | `granted` ohne Token |
+| `imprint` | Imprint deckt nicht die Signaturbytes |
+| `contentdigest` | signiertes message-digest passt nicht zur TSTInfo |
+| `tsa-key` | kein TSA-Schlüssel, also nichts geprüft |
+| `cms-signature` | Signatur hält nicht über die signierten Attribute |
+| `verified` | **nur** wenn alles oben gehalten hat |
+
+```js
+import { createVerifiedTransport } from "./c2pa-transport.js";
+
+// Ohne verifyToken bleibt es beim ehrlichen Nein, mit step: "tsa-signature".
+// Mit dem Verifier wird aus dem Status ein Nachweis.
+const transport = createVerifiedTransport({
+  http: myFetch,
+  trustAnchors: ["Example Root CA"],
+  tsaPublicKey: spkiBytes,
+});
+```
+
+**Ein Ergebnis, das seinen Schritt nennt, ist mehr wert als ein `false`.** Wer
+`step: "contentdigest"` bekommt, weiß, dass die Signatur stand und die Bindung
+zwischen Signatur und Token nicht — das sind zwei verschiedene Reparaturen.
+
+---
+
 ## Ableitungen: MODIFIED auflösbar machen
 
 Ein gescanntes Kartenbild ist nicht das Foto — zwischen Aufnahme und Anzeige
@@ -160,10 +206,14 @@ die aktuellen Bytes zurück zur signierten Quelle:
 | `signature.js` | Signatur-**Policy** + Verifier-Schnittstelle |
 | `verifier-bridge.js` | Brücke: Verifier-Antwort → Record-Evidence |
 | `fingerprint.js` | Fingerabdruck-Prüfung und Ableitungs-Verweis |
+| `c2pa-verifier.js` | Manifest-, Signatur- und Erzeugungsschicht über Bytes |
+| `c2pa-providers.js` | Signatur-, Ketten- und Zeitstempel-Provider |
+| `c2pa-transport.js` | Netz-Schicht: Kette, CRL, Zeitstempel-Status |
+| `c2pa-tsr.js` | **Zweiter Zertifizierungsschritt: TSA-Signaturnachweis** |
 | `demo-verifier.js` | Demo-Verifier und die vier Policies |
 | `record-0.2.schema.json` | JSON Schema (2020-12). `verdict` fehlt darin absichtlich |
 | `vectors.js` | Testvektoren |
-| `conformance.mjs` · `derivation.test.mjs` · `signature.test.mjs` · `fingerprint.test.mjs` | Die vier Suiten |
+| `conformance.mjs` · `derivation.test.mjs` · `signature.test.mjs` · `fingerprint.test.mjs` · `c2pa-transport.test.mjs` · `c2pa-tsr.test.mjs` | Die sechs Suiten |
 | `index.html` | Bedienbare Demo mit Policy-Umschaltung und Fingerabdruck-Panel |
 | `sw.js` · `manifest.webmanifest` · `.nojekyll` | Offline-Shell, installierbar, GitHub Pages |
 | `sprechnotizen.md` | Sprechnotizen zum 15-Folien-Deck |
@@ -179,6 +229,8 @@ node conformance.mjs
 node derivation.test.mjs
 node signature.test.mjs
 node fingerprint.test.mjs
+node c2pa-transport.test.mjs
+node c2pa-tsr.test.mjs
 ```
 
 **Demo** — über HTTP ausliefern, ES-Module laden nicht von `file://`:
@@ -193,10 +245,14 @@ python3 -m http.server 8000
 ## Prüfergebnisse
 
 ```
-conformance.mjs         passed 14/14
-derivation.test.mjs     passed 16/16
-signature.test.mjs      passed 18/18
-fingerprint.test.mjs    passed 20/20
+conformance.mjs          passed 14/14
+derivation.test.mjs      passed 16/16
+signature.test.mjs       passed 18/18
+fingerprint.test.mjs     passed 20/20
+c2pa-transport.test.mjs  passed 37/37
+c2pa-tsr.test.mjs        passed 33/33
+
+Das sind 138 Testfälle in sechs Suiten, zwanzig Invarianten.
 
 inv  verdict is never persisted                          holds
 inv  unsigned claim never forges provenance              holds
@@ -213,14 +269,24 @@ inv  an expired chain never verifies by default          holds
 inv  the grid is unchanged: nine mappings                holds
 inv  the fingerprint is reported when the status hides it holds
 inv  the fingerprint never lifts a status                holds
+inv  a root off the trust list is never accepted         holds
+inv  a CRL match is by value, not by position            holds
+inv  no http function means no revocation was checked    holds
+inv  a timestamp is never trusted without a TSA proof    holds
+inv  every refusal names the step that blocked           holds
 ```
 
 ---
 
 ## Was fehlt
 
-- **Ein konkreter C2PA-Verifier.** Die Schnittstelle ist definiert und getestet,
-  ein echter Verifier (Netz, Revocation, Zeitstempel) ist der nächste Bauabschnitt.
+- **Ein echtes Netz-I/O.** Alle Provider und der TSA-Nachweis sind gebaut und
+  geprüft, aber die `http`-Funktion wird von außen übergeben. Der Bauabschnitt ist
+  eine `fetch`-Implementierung mit Rate-Limit und Frist, kein Algorithmus.
+- **CRL-Signaturprüfung.** Die Kettenordnung und die Wertsuche laufen; die
+  Signatur über die CRL selbst nicht.
+- **Zwei interoperable Implementierungen.** Ein Standard mit einer Umsetzung ist
+  eine Beschreibung. Stufe 7 braucht eine zweite.
 - **Derivation über Record-Grenzen.** Heute löst ein Verifier gegen seinen
   eigenen Store auf.
 - **API (Stufe 5) und Browser-Integration (Stufe 4)** — Roadmap, nicht Code.
