@@ -1,6 +1,6 @@
 # TRUST:// — Ein offener Standard für nachweisbare Herkunft im Netz
 
-> **Version 0.2** · Record Format `TRUST-Record/0.2` · Referenzimplementierung in Arbeit
+> **Version 0.3** · Record Format `TRUST-Record/0.2` · Referenzimplementierung in Arbeit
 
 TRUST:// beantwortet eine Frage, die heute niemand plattformübergreifend beantworten
 kann: **Woher kommt ein Inhalt, und hat ihn seitdem jemand angefasst?** — und es
@@ -205,6 +205,49 @@ Ein Record, der sagt „X ist vertrauenswürdig", wäre eine Meinung.
 
 ---
 
+## Der Zeitstempel: zwei Schritte, die man nicht verschmelzen darf
+
+Ein RFC-3161-Zeitstempel sieht wie ein Ergebnis aus und ist zwei Dinge:
+
+```
+1. STATUS      Die Autorität hat "granted" geantwortet.          <- lesen
+2. TSA-PROOF   Die CMS-Signatur des Tokens hält gegen den
+               TSA-Schlüssel, über Attribute, die die TSTInfo
+               decken, deren messageImprint die Signaturbytes
+               deckt, die man bekommen hat.                     <- nachrechnen
+```
+
+Schritt 1 allein ist eine **Behauptung eines Dritten**. Erst Schritt 2 ist ein
+**Nachweis**. Ein System, das beide verschmilzt, berichtet am Ende „Zeitstempel
+gültig", weil ein entferntes System das Wort „granted" gesagt hat — und das ist
+eine Aussage über den Aussteller, nicht über den Inhalt.
+
+`c2pa-tsr.js` trennt sie und prüft in dieser Reihenfolge:
+
+| Prüfung | Scheitert bei |
+|---|---|
+| `status` | Antwort ohne `granted` |
+| `token` | `granted` ohne Token |
+| `imprint` | Imprint deckt nicht die Signaturbytes |
+| `contentdigest` | signiertes message-digest passt nicht zur TSTInfo |
+| `tsa-key` | kein TSA-Schlüssel, also nichts geprüft |
+| `cms-signature` | Signatur hält nicht über die signierten Attribute |
+| `verified` | **nur** wenn alles oben gehalten hat |
+
+**Der Transport lügt nicht über seinen Zustand.** Ohne injizierten Nachweis gibt
+`verifyTimestamp` weiterhin `trusted: false` zurück — jetzt aber mit
+`step: "tsa-signature"` und dem Grund, dass kein `verifyToken` verdrahtet war.
+Ein Aufrufer mit TSA-Schlüssel bekommt über `createVerifiedTransport` den echten
+Nachweis.
+
+Die interessante Detailkante, die jede Implementierung beim ersten Versuch
+falsch macht: signierte Attribute werden in ihrer **IMPLICIT `[0]`**-Form
+signiert, aber in ihrer expliziten **SET OF**-Form verifiziert. Nur das Tag-Byte
+unterscheidet sich — und wer es nicht umsetzt, dessen CMS-Prüfung scheitert an
+einem völlig gültigen Token.
+
+---
+
 ## Der Record
 
 ```json
@@ -254,6 +297,7 @@ in **Beobachtung** und **Bewertung**.
 | Identity | Beobachtung | ja, als Verweis |
 | Evidence | Beobachtung | ja, als Liste |
 | Verification | Beobachtung | ja, als Policy des Prüfers |
+| Timestamp proof | Beobachtung | ja, als zweiter Zertifizierungsschritt |
 | Fingerprint | Beobachtung | ja, neben dem Gitter |
 | Generation claim | Behauptung | ja, getrennt geführt |
 | Derivation | Erklärung | ja, verifier-aufgelöst |
@@ -268,14 +312,16 @@ Stufe 7 tot, egal wie offen die Spezifikation aussieht.
 
 ## Was läuft
 
-Der Prototyp ist gebaut und geprüft. **68 Testfälle in vier Suiten, fünfzehn
+Der Prototyp ist gebaut und geprüft. **138 Testfälle in sechs Suiten, zwanzig
 Invarianten.**
 
 ```
-conformance.mjs         passed 14/14
-derivation.test.mjs     passed 16/16
-signature.test.mjs      passed 18/18
-fingerprint.test.mjs    passed 20/20
+conformance.mjs          passed 14/14
+derivation.test.mjs      passed 16/16
+signature.test.mjs       passed 18/18
+fingerprint.test.mjs     passed 20/20
+c2pa-transport.test.mjs  passed 37/37
+c2pa-tsr.test.mjs        passed 33/33
 ```
 
 ```
@@ -310,6 +356,11 @@ inv  an expired chain never verifies by default        holds
 inv  the grid is unchanged: nine mappings              holds
 inv  the fingerprint is reported when the status hides it holds
 inv  the fingerprint never lifts a status              holds
+inv  a root off the trust list is never accepted       holds
+inv  a CRL match is by value, not by position          holds
+inv  no http function means no revocation was checked  holds
+inv  a timestamp is never trusted without a TSA proof  holds
+inv  every refusal names the step that blocked          holds
 ```
 
 Die zwei Zeilen, die zusammen gelesen werden müssen: `claim-plus-signer` und
@@ -323,12 +374,18 @@ Verdikte. Die Behauptung selbst bewegt nichts.
 | `signature.js` | Signatur-Policy und Verifier-Schnittstelle |
 | `verifier-bridge.js` | Brücke: Verifier-Antwort → Record-Evidence |
 | `fingerprint.js` | Fingerabdruck-Prüfung und Ableitungs-Verweis |
+| `c2pa-verifier.js` | Manifest-, Signatur- und Erzeugungsschicht über Bytes |
+| `c2pa-providers.js` | Signatur-, Ketten- und Zeitstempel-Provider |
+| `c2pa-transport.js` | Netz-Schicht: Kette, CRL, Zeitstempel-Status |
+| `c2pa-tsr.js` | **Zweiter Zertifizierungsschritt: TSA-Signaturnachweis** |
 | `demo-verifier.js` | Demo-Verifier und die vier Policies |
 | `index.html` | Bedienbare Demo — Datei wird lokal gehasht, verlässt den Browser nicht |
 | `conformance.mjs` | Konformitätsliste, in sich geschlossen |
 | `derivation.test.mjs` | Ableitungs-Suite: Scan-Szenario, Ende zu Ende |
 | `signature.test.mjs` | Signatur-Policy-Suite: fail closed |
 | `fingerprint.test.mjs` | Fingerabdruck-Suite: Gitter unverändert |
+| `c2pa-transport.test.mjs` | Transport-Suite: Kette, CRL, Zeitstempel-Status |
+| `c2pa-tsr.test.mjs` | TSR-Suite: der zweite Zertifizierungsschritt |
 | `record-0.2.schema.json` | JSON Schema 2020-12 |
 | `vectors.js` | Testvektoren, einer pro Status |
 
@@ -338,8 +395,14 @@ Verdikte. Die Behauptung selbst bewegt nichts.
 
 Ehrlich, weil diese Liste im Gespräch als Erstes geprüft wird.
 
-- **Ein konkreter C2PA-Verifier.** Die Schnittstelle ist definiert und getestet,
-  ein echter Verifier (Netz, Revocation, Zeitstempel) ist der nächste Bauabschnitt.
+- **Ein echtes Netz-I/O.** Alle drei Provider und der TSA-Nachweis sind gebaut
+  und geprüft, aber die `http`-Funktion wird von außen übergeben. Der Bauabschnitt
+  ist eine `fetch`-Implementierung mit Rate-Limit und Frist, kein Algorithmus.
+- **CRL-Signaturprüfung und Zertifikatssignaturprüfung.** Die Kettenordnung und
+  die Wertsuche in der CRL laufen; die Signatur über die CRL selbst nicht.
+- **Zwei interoperable Implementierungen.** Ein Standard mit einer Umsetzung ist
+  eine Beschreibung. Stufe 7 braucht eine zweite, die aus denselben Bytes
+  denselben Record erzeugt.
 - **Derivation über Record-Grenzen.** Heute löst ein Verifier gegen seinen
   eigenen Store auf. Für plattformübergreifende Ketten braucht es eine
   Abfrage-Semantik, nicht nur einen Map-Zugriff.
@@ -364,41 +427,13 @@ bei konstantem Record-Format.
 | 4 | Browser | Status im Vertrauensanzeiger |
 | 5 | API | Fremdsysteme reichen Records ein |
 | 6 | Selbstauskunft | Seiten weisen ihre Herkunft selbst aus |
-| 7 | Offener Standard | Format und Semantik normiert, anbieterunabhängig |
-
-Der Bruch liegt bei **6 -> 7**, nicht bei 5 -> 6. Eine Schnittstelle lässt sich
-bauen. Ein offener Standard heißt, dass die eigene Existenz verzichtbar wird.
-
----
-
-## Entwurfsprinzipien
-
-1. **Normiert werden Beobachtungen, keine Bewertungen.**
-2. **Abwesenheit eines Nachweises ist ein eigener Zustand**, kein Gegenbeweis.
-3. **Identität ist ein Verweis**, kein Wert — der Prüfer löst ihn auf.
-4. **Eine Ableitung erbt keine Herkunft.** Sie erklärt eine Beziehung, sie
-   beweist sie nicht.
-5. **Ein Fingerabdruck steht neben dem Status, nicht in ihm.** Er meldet, ob der
-   Inhalt der ist, der er zu sein behauptet — und hebt nie einen Status an.
-6. **Unbestimmtes Verhalten schlägt geschlossen fehl.** Ein fehlgeschlagener
-   oder unbekannter Check erzeugt nie `verified`.
-7. **Der Standard ist selbst verzichtbar.** Wer ihn liest, braucht von uns
-   keine Lizenz und keine Auszeichnung.
-
----
-
-## Abgrenzung
-
-Kein Wahrheitsurteil. Keine Signaturpflicht. Keine Zertifizierungsstelle. Keine
-Aussage darüber, ob ein Inhalt nützlich, erwünscht oder von einer Maschine
-erzeugt ist. Keine Unterstellung einer Absicht bei fehlendem Nachweis.
-
-Der Standard ersetzt die bestehenden Provenienzverfahren nicht — er braucht sie,
-weil er nichts erzeugt, was er nicht auch nachprüfen kann. Seine einzige Leistung
-ist die Vereinheitlichung dessen, was diese Verfahren finden.
+| 7 | Standard | mehrere unabhängige Umsetzungen |
 
 ---
 
 ## Lizenz
 
-Apache-2.0. Siehe [LICENSE](LICENSE).
+Apache-2.0. Kein Wahrheitsurteil, keine Signaturpflicht, keine
+Zertifizierungsstelle.
+
+**Herkunft wird dauerhaft nachprüfbar, nicht dauerhaft wahr.**
