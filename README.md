@@ -12,7 +12,7 @@ in **[TRUST.md](TRUST.md)**. Dieses Readme ist die Landkarte für den Code.
 
 ---
 
-## Drei Achsen, ein berechneter Status
+## Zwei Achsen im Gitter, eine daneben
 
 ```
 origin:     verified | claimed | none
@@ -20,20 +20,55 @@ integrity:  intact | modified | broken
 generation: attested_by_signer | asserted | none
 ```
 
-Das sind die einzigen Werte, die je gespeichert werden. Der Status, den ein
-Nutzer sieht — VERIFIED, AUTHENTICATED, CLAIMED, MODIFIED, INVALID, UNKNOWN —
-wird aus `origin` und `integrity` **berechnet** und niemals persistiert.
+Das Gitter ist **unverändert seit 0.1**. Sechs Status, zwei Achsen, dieselbe
+Zuordnung. Daneben steht eine dritte Prüfung, die den Status nie berührt:
 
-| Achse | Frage | Charakter |
+```
+fingerprint: match | mismatch | multiple | none
+```
+
+| | Frage | Charakter |
 |---|---|---|
 | `origin` | Kann die Bindung bewiesen werden? | Beobachtung |
 | `integrity` | Stimmt der Inhalt noch mit der Signatur? | Beobachtung |
-| `generation` | Was wurde über die Erzeugung behauptet? | **Behauptung**, kein Messwert |
+| `generation` | Was wurde über die Erzeugung behauptet? | **Behauptung** |
+| `fingerprint` | Ist der Inhalt der Inhalt, der er zu sein behauptet? | **Eigenschaft des Inhalts** |
 
-Die dritte Achse erkennt nicht, ob etwas KI ist — das kann kein System. Sie
-verortet die Behauptung: *signiert* (`attested_by_signer`) oder *frei stehend*
-(`asserted`). `none` heißt „niemand hat etwas behauptet", **nicht** „von einem
-Menschen gemacht".
+---
+
+## Der Fingerabdruck
+
+**Alles hat einen Fingerabdruck.** Ein Hash ist keine Meinung eines Prüfers über
+einen Inhalt — er ist eine Eigenschaft des Inhalts selbst. Deshalb braucht diese
+Prüfung **keinen Verifier, keine Trust-Liste, kein Netzwerk**: Sie vergleicht den
+deklarierten Fingerabdruck mit dem Fingerabdruck der vorliegenden Bytes.
+
+| Ergebnis | Bedeutung |
+|---|---|
+| `match` | Der deklarierte Fingerabdruck ist der dieser Bytes |
+| `mismatch` | Der deklarierte Fingerabdruck gehört zu anderen Bytes |
+| `multiple` | Die Belege deklarieren mehr als einen Fingerabdruck |
+| `none` | Nichts wurde deklariert, also nichts zu vergleichen |
+
+**Warum er neben dem Gitter steht und nicht darin:**
+
+- Das Gitter sagt: *in welchem Zustand ist dieser Record.*
+- Der Fingerabdruck sagt: *ist der Inhalt der Inhalt, der er zu sein behauptet.*
+
+Verschiedene Fragen, verschiedene Haltbarkeitsdauern. Der **Status** ändert sich,
+wenn neue Belege eintreffen — aus CLAIMED kann später VERIFIED werden. Der
+**Fingerabdruck** ist einfach; er wurde über Bytes gerechnet und ist in hundert
+Jahren dieselbe Tatsache.
+
+Der wichtigste Fall, den das sichtbar macht:
+
+```
+Status:        CLAIMED      (Signatur nicht bestätigt)
+Fingerabdruck: mismatch     (die Bytes sind andere)
+```
+
+Vorher wäre dieser Befund spurlos im Status verschwunden. Jetzt steht er da.
+Und: **Der Fingerabdruck kann einen Status nie anheben.**
 
 ---
 
@@ -46,35 +81,28 @@ Menschen gemacht".
  broken      INVALID           INVALID        UNKNOWN
 ```
 
-- **`MODIFIED` ist ein Zustand, keine Warnung.** Eine legitime Bearbeitung nach
-  der Signatur erzeugt genau diesen Wert.
+- **`MODIFIED` ist ein Zustand, keine Warnung.**
 - **`UNKNOWN` ist ein Messergebnis, kein Verdacht.**
 - **`AUTHENTICATED`** ist `VERIFIED` plus separater Identitätsnachweis.
 
 ---
 
-## Vier Module, vier Fragen
+## Vier Module, fünf Fragen
 
-Der Code ist entlang von Fragen geschnitten, nicht entlang von Schichten. Jedes
-Modul besitzt genau eine, und keine beantwortet die einer anderen.
-
-| Modul | Frage | Braucht Netz? |
-|---|---|---|
-| `signature.js` | **Dürfen wir diese Attestierung „verifiziert" nennen?** | nein (Policy) |
-| `verifier-bridge.js` | Kann der Record die Antwort der Prüfung lesen? | nein |
-| `engine.js` | Gegeben geprüfte Fakten — was ist der Record? | nein |
-| `derivation.js` | Ist ein verändertes Byte ein Transform oder eine Manipulation? | nein |
+| Modul | Frage |
+|---|---|
+| `signature.js` | **Dürfen wir diese Attestierung „verifiziert" nennen?** |
+| `verifier-bridge.js` | Kann der Record die Antwort der Prüfung lesen? |
+| `engine.js` | Gegeben geprüfte Fakten — was ist der Record? |
+| `derivation.js` | Ist ein verändertes Byte ein Transform oder eine Manipulation? |
+| `fingerprint.js` | Ist der Inhalt der Inhalt, der er zu sein behauptet? |
 
 ---
 
 ## Signaturen: die Grenze, die man nicht überschreiten kann
 
-Volle C2PA-Validierung heißt: CBOR/COSE-Struktur parsen, X.509-Kette zu einem
-Trust Anchor bauen, Revocation prüfen (CRL/OCSP über Netz), RFC-3161-Zeitstempel
-verifizieren. **Das braucht ein Netzwerk und eine Vertrauensliste.** Wer behauptet,
-das offline zu tun, lügt.
-
-Die Arbeit ist deshalb entlang einer Linie geteilt, die sich ehrlich ziehen lässt:
+Volle C2PA-Validierung braucht Netzwerk und Vertrauensliste. Die Arbeit ist
+deshalb entlang einer Linie geteilt:
 
 ```
 VERIFIER (braucht Netz)           POLICY (signature.js, braucht nichts)
@@ -85,61 +113,40 @@ RFC 3161 Zeitstempel              Behandeln wir "unbekannt" als Fehler?
 Kryptografische Signaturprüfung   Wieviel Uhr-Abweichung erlauben wir?
 ```
 
-Der Verifier ist eine **injizierte Schnittstelle**, keine fehlende Funktion. Die
-Policy-Schicht ist vollständig gebaut und getestet.
+Der Verifier ist eine **injizierte Schnittstelle**. Die Policy-Schicht ist
+vollständig gebaut und getestet.
 
 ```js
-import { createStubVerifier, withPolicy, createTrustList, annotateEvidence } from "./verifier-bridge.js";
+import { createDemoVerifier, DEMO_VERIFICATIONS, DEMO_POLICIES } from "./demo-verifier.js";
+import { createTrustList, withPolicy, annotateEvidence } from "./verifier-bridge.js";
 import { deriveRecord } from "./engine.js";
+import { attachChecks } from "./fingerprint.js";
 
-const verifier = createStubVerifier({ "urn:c2pa:9f2c": { state: "verified", chain: "intact", anchor: "Example Root CA" } });
+const verifier = createDemoVerifier(DEMO_VERIFICATIONS);
+const policy = withPolicy(DEMO_POLICIES.strict.config(createTrustList));
 
-const policy = withPolicy({
-  trustList: createTrustList(["Example Root CA"]),
-  allowExpiredChain: false,
-  requireTrustedTimestamp: false,
-});
-
-// Die Attestierung wird NICHT ungeprüft übernommen: annotateEvidence ersetzt
-// `state` und `chain` durch das, was der Verifier festgestellt hat.
+// annotateEvidence ERSETZT state und chain durch das, was der Verifier
+// festgestellt hat. Ein Aufrufer kann kein state: "valid" einschmuggeln.
 const evidence = await annotateEvidence(rawEvidence, verifier, policy);
-const { record, derivation } = deriveRecord({ subject, evidence, content_hash, issuer });
+const input = { subject, evidence, content_hash, issuer };
+
+const out = deriveRecord(input);
+const withChecks = attachChecks(out.record, input, trustStore);
 ```
 
 **Die Regel, die alles trägt:** Ein fehlgeschlagener *oder* unbestimmter Check
-erzeugt **nie** `verified`. Unbestimmtes Verhalten schlägt geschlossen fehl — eine
-unauflösbare Kette, ein abgelaufenes Zertifikat und ein Verifier, der schlicht
-eine Exception wirft, landen bei höchstens `claimed`.
-
-Und: **`unknown` und `invalid` sind verschiedene Aussagen.** Sie zu verschmelzen
-würde aus „wir konnten nicht prüfen" ein „wir haben geprüft, es ist gefälscht"
-machen — die schädlichste Lüge, die ein Verifikationssystem erzählen kann.
+erzeugt **nie** `verified`. `unknown` und `invalid` sind verschiedene Aussagen.
 
 ---
 
 ## Ableitungen: MODIFIED auflösbar machen
 
-Ein gescanntes Kartenbild ist nicht das Foto. Zwischen Aufnahme und Anzeige
-liegen Geraderücken, Zuschnitt, Farbkorrektur, Skalierung. **Die meisten Records
-in der echten Welt sind so** — das Geprüfte ist ein bearbeitetes Derivat von
-etwas, das signiert war.
-
-Der Record löst das mit einem Feld am Subjekt:
-
-```json
-"subject": {
-  "kind": "card",
-  "id": "card:pokemon:base-set:4/102",
-  "derived_from": ["<sha256 der Kamera-Aufnahme>"]
-}
-```
+Ein gescanntes Kartenbild ist nicht das Foto — zwischen Aufnahme und Anzeige
+liegen Geraderücken, Zuschnitt, Farbkorrektur. `subject.derived_from` verlinkt
+die aktuellen Bytes zurück zur signierten Quelle:
 
 > **Eine Ableitung bewegt nur `integrity`, niemals `origin`.**
 > Man kann keine Herkunft erben, die man nicht beweisen kann.
-
-Ein fremdes Bild, das einfach dieselbe Abstammung *behauptet*, erbt nichts:
-`origin` bleibt `none`, der Status bleibt UNKNOWN. Ein Edit ohne auflösbaren
-Verweis bleibt `modified` **ohne** `resolvable`-Markierung.
 
 ---
 
@@ -152,13 +159,13 @@ Verweis bleibt `modified` **ohne** `resolvable`-Markierung.
 | `derivation.js` | Ableitungs-Pipeline mit Herkunftskette |
 | `signature.js` | Signatur-**Policy** + Verifier-Schnittstelle |
 | `verifier-bridge.js` | Brücke: Verifier-Antwort → Record-Evidence |
+| `fingerprint.js` | Fingerabdruck-Prüfung und Ableitungs-Verweis |
+| `demo-verifier.js` | Demo-Verifier und die vier Policies |
 | `record-0.2.schema.json` | JSON Schema (2020-12). `verdict` fehlt darin absichtlich |
-| `vectors.js` | Testvektoren, einer pro Status plus Erzeugungsachse |
-| `conformance.mjs` | Konformitätsliste, in sich geschlossen |
-| `derivation.test.mjs` | Ableitungs-Suite: Scan-Szenario, Ende zu Ende |
-| `signature.test.mjs` | Signatur-Policy-Suite: fail closed |
-| `index.html` | Bedienbare Demo |
-| `sw.js`, `manifest.webmanifest`, `.nojekyll` | Offline-Shell, installierbar, GitHub Pages |
+| `vectors.js` | Testvektoren |
+| `conformance.mjs` · `derivation.test.mjs` · `signature.test.mjs` · `fingerprint.test.mjs` | Die vier Suiten |
+| `index.html` | Bedienbare Demo mit Policy-Umschaltung und Fingerabdruck-Panel |
+| `sw.js` · `manifest.webmanifest` · `.nojekyll` | Offline-Shell, installierbar, GitHub Pages |
 | `sprechnotizen.md` | Sprechnotizen zum 15-Folien-Deck |
 
 ---
@@ -171,6 +178,7 @@ Alle Suiten sind in sich geschlossen — sie brauchen nichts außer WebCrypto:
 node conformance.mjs
 node derivation.test.mjs
 node signature.test.mjs
+node fingerprint.test.mjs
 ```
 
 **Demo** — über HTTP ausliefern, ES-Module laden nicht von `file://`:
@@ -185,26 +193,27 @@ python3 -m http.server 8000
 ## Prüfergebnisse
 
 ```
-conformance.mjs      passed 14/14
-derivation.test.mjs  passed 16/16
-signature.test.mjs   passed 18/18
+conformance.mjs         passed 14/14
+derivation.test.mjs     passed 16/16
+signature.test.mjs      passed 18/18
+fingerprint.test.mjs    passed 20/20
 
-inv  verdict is never persisted                        holds
-inv  unsigned claim never forges provenance            holds
-inv  generation never moves origin/integrity           holds
-inv  unsigned claim never downgrades a signed subject  holds
-inv  derivation moves only integrity                   holds
-inv  derivation never grants origin                    holds
-inv  unresolvable edit stays MODIFIED                  holds
-inv  nothing non-verified is reported as verified      holds
-inv  unknown stays distinct from invalid               holds
-inv  a throwing verifier never verifies                holds
-inv  an untrusted anchor never verifies                holds
-inv  an expired chain never verifies by default        holds
+inv  verdict is never persisted                          holds
+inv  unsigned claim never forges provenance              holds
+inv  generation never moves origin/integrity             holds
+inv  unsigned claim never downgrades a signed subject    holds
+inv  derivation moves only integrity                     holds
+inv  derivation never grants origin                      holds
+inv  unresolvable edit stays MODIFIED                    holds
+inv  nothing non-verified is reported as verified        holds
+inv  unknown stays distinct from invalid                 holds
+inv  a throwing verifier never verifies                  holds
+inv  an untrusted anchor never verifies                  holds
+inv  an expired chain never verifies by default          holds
+inv  the grid is unchanged: nine mappings                holds
+inv  the fingerprint is reported when the status hides it holds
+inv  the fingerprint never lifts a status                holds
 ```
-
-Zwölf Invarianten. Jede lässt sich in einer Zeile brechen — und dann liest ein
-Prüfer eine Herkunft, die niemand belegt hat.
 
 ---
 
@@ -213,8 +222,7 @@ Prüfer eine Herkunft, die niemand belegt hat.
 - **Ein konkreter C2PA-Verifier.** Die Schnittstelle ist definiert und getestet,
   ein echter Verifier (Netz, Revocation, Zeitstempel) ist der nächste Bauabschnitt.
 - **Derivation über Record-Grenzen.** Heute löst ein Verifier gegen seinen
-  eigenen Store auf. Für plattformübergreifende Ketten braucht es eine
-  Abfrage-Semantik, nicht nur einen Map-Zugriff.
+  eigenen Store auf.
 - **API (Stufe 5) und Browser-Integration (Stufe 4)** — Roadmap, nicht Code.
 - **Kein Patent auf das Datenformat.** Eine Entscheidung, keine Lücke.
 
@@ -224,17 +232,11 @@ Prüfer eine Herkunft, die niemand belegt hat.
 
 Apache-2.0. Siehe [LICENSE](LICENSE).
 
-Abschnitt 3 enthält eine **Patentlizenz** auf Beiträge. Für ein Format, das
-offen bleiben soll, ist das die passende Wahl — es verhindert, dass ein
-Beitragender später Patentansprüche gegen Implementierungen geltend macht.
-Patente auf den Record selbst gibt es nicht.
-
 ---
 
 ## Abgrenzung
 
 Kein Wahrheitsurteil. Keine Signaturpflicht. Keine Zertifizierungsstelle. Keine
-Aussage darüber, ob ein Inhalt von einer Maschine erzeugt ist. Keine
-Unterstellung einer Absicht bei fehlendem Nachweis.
+Aussage darüber, ob ein Inhalt von einer Maschine erzeugt ist.
 
 **Herkunft wird dauerhaft nachprüfbar, nicht dauerhaft wahr.**
