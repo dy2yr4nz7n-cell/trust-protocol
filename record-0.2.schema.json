@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trust.example.org/schema/record-0.2.json",
   "title": "TRUST Record",
-  "description": "A record of what a verifier observed about a subject. It carries observations only. 'verdict' is deliberately NOT a member of this schema: the display status is derived from origin + integrity at read time and must never be persisted. The 'generation' member reports what was CLAIMED about how the content was made; it is not a measurement and never affects origin or integrity. 'subject.derived_from' is a DECLARATION the verifier resolves against its own records; it may move integrity, never origin.",
+  "description": "A record of what a verifier observed about a subject. It carries observations only. 'verdict' is deliberately NOT a member of this schema: the display status is derived from origin + integrity at read time and must never be persisted. The 'generation' member reports what was CLAIMED about how the content was made; it is not a measurement and never affects origin or integrity. 'fingerprint' is an independent check reported ALONGSIDE the status; it never affects the grid. 'subject.derived_from' is a DECLARATION the verifier resolves against its own records.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["spec_version", "subject", "origin", "integrity", "generation", "evidence", "checked_at"],
+  "required": ["spec_version", "subject", "origin", "integrity", "generation", "fingerprint", "evidence", "checked_at"],
   "properties": {
     "spec_version": {
       "const": "TRUST-Record/0.2",
@@ -44,6 +44,32 @@
       "enum": ["attested_by_signer", "asserted", "none"],
       "description": "What was CLAIMED about how the content was made. 'attested_by_signer' means the claim sat inside a valid attestation: signed and non-repudiable, still a claim and not a measurement. 'asserted' means the claim stands alone and anyone could have added it. 'none' means nothing was claimed and does NOT mean the content is human-made."
     },
+    "fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result"],
+      "description": "An independent check: is the content the content it claims to be? A hash is a property of the content itself, so this check needs no verifier, no trust list and no network. It is reported ALONGSIDE the status and can never lift it.",
+      "properties": {
+        "result": {
+          "enum": ["match", "mismatch", "multiple", "none"],
+          "description": "'match' the declared fingerprint is the fingerprint of these bytes; 'mismatch' it belongs to different bytes; 'multiple' the evidence declares more than one; 'none' nothing was declared or no bytes were presented."
+        },
+        "declared": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "description": "The distinct fingerprints the evidence declared, lowercase hex."
+        },
+        "computed": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of the bytes in hand. Absent when no bytes were presented."
+        },
+        "detail": {
+          "type": "string",
+          "description": "One line stating why the result is what it is."
+        }
+      }
+    },
     "content_hash": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$",
@@ -67,6 +93,10 @@
               "chain": { "enum": ["intact", "expired", "unavailable"], "default": "unavailable" },
               "content_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
               "identity_proof": { "type": ["boolean", "string"] },
+              "signer": { "type": "string" },
+              "anchor": { "type": "string" },
+              "verification_notes": { "type": "array", "items": { "type": "string" } },
+              "verification_reason": { "type": "string" },
               "generation": {
                 "type": "object",
                 "additionalProperties": false,
