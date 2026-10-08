@@ -23,14 +23,31 @@
  *   · expiry evaluation against a reference time
  *   · CRL fetch, DER parse, and revocation lookup BY VALUE
  *   · RFC 3161 status parsing
+ *   · the TSA signature itself, by delegation to c2pa-tsr.js (the second
+ *     certification step) — see verifyTimestamp below
  *
  * NOT IMPLEMENTED, stated so nobody has to discover it:
  *   · signature verification of the certificates themselves
  *   · name constraints, policy constraints, path length constraints
  *   · CRL signature verification
- *   · verification of the TSA signature on a timestamp token
+ *
  * A transport that cannot do a step reports that step as failed. It never
  * reports success for work it did not do.
+ *
+ * THE TWO CERTIFICATION STEPS, KEPT APART
+ * ---------------------------------------
+ * A timestamp has two separable parts, and collapsing them is how a system
+ * starts claiming more than it knows:
+ *
+ *   1. STATUS     the authority answered "granted"           — parsed here
+ *   2. TSA PROOF  the token's CMS signature verifies against
+ *                 the TSA key, over attributes that cover
+ *                 the TSTInfo, whose imprint covers the
+ *                 signature bytes we were given            — c2pa-tsr.js
+ *
+ * Step 1 alone is a claim by someone else. Step 2 is evidence. This transport
+ * reports `trusted: true` only when step 2 actually ran, and otherwise names the
+ * step that did not happen.
  *
  * THE DER DETAIL THAT MATTERS
  * ---------------------------
@@ -41,7 +58,9 @@
  * field that is PRESENT, so an absent optional field cannot shift the rest.
  */
 
-export const TRANSPORT_VERSION = "trust/transport@0.2";
+import { verifyTimestampResponse } from "./c2pa-tsr.js";
+
+export const TRANSPORT_VERSION = "trust/transport@0.3";
 
 /* ================================================================== *
  * DER — just enough ASN.1 to read a certificate and a CRL
@@ -259,17 +278,19 @@ export function checkCrl(crlDer, serialHex) {
  * @param {object} options
  *   http           async ({ method, url, headers, body }) -> { status, headers, body }
  *   trustAnchors   configured anchor names, e.g. ["Example Root CA"]
- *   crlUrls        map from issuer hex -> CRL URL, when the certificate carries none
+ *   crlUrls        optional map from issuer hex -> URL, when the certificate
+ *                  does not carry a CRL distribution point
  *   referenceTime  ISO string used for expiry evaluation
+ *   tsaPublicKey   SPKI bytes of the timestamp authority, when known
+ *   verifyToken    the second certification step; defaults to c2pa-tsr.js
  */
 export function createTransport(options = {}) {
-  const { http, trustAnchors = [], crlUrls = {}, referenceTime } = options;
+  const { http, trustAnchors = [], crlUrls = {}, referenceTime, tsaPublicKey, verifyToken } = options;
 
   return {
     version: TRANSPORT_VERSION,
 
     async buildPath(certificates) {
-      /* Chain building needs no network: the certificates are here. */
       return buildChain(certificates, trustAnchors, referenceTime);
     },
 
@@ -298,31 +319,64 @@ export function createTransport(options = {}) {
       return { revoked: false, checked, reason: note || (checked ? "no certificate appeared in any fetched CRL" : "no CRL distribution point was available") };
     },
 
-    async verifyTimestamp({ signature, timestampToken }) {
+    async verifyTimestamp({ signature, payload, timestampToken }) {
       /* Parsing a TimeStampResp needs the token. Without it the honest answer is
        * that no countersignature was presented. */
       if (!timestampToken) {
-        return { trusted: false, at: null, reason: "no countersignature token was presented" };
+        return { trusted: false, at: null, step: "none", reason: "no countersignature token was presented" };
       }
+
+      /* THE SECOND CERTIFICATION STEP.
+       *
+       * A granted status is not trust — it is a claim by the authority. When a
+       * verifyToken implementation is injected, this transport hands the token
+       * to it and reports what it actually established: the messageImprint over
+       * the signature bytes, the content digest over the TSTInfo, and the CMS
+       * signature over the signed attributes, each named on failure.
+       *
+       * Without one, the answer stays the old honest no — and it says which
+       * step did not happen rather than quietly implying the rest did. */
+      if (typeof verifyToken === "function") {
+        return verifyToken({ signature, payload, timestampToken, tsaPublicKey });
+      }
+
       const token = timestampToken instanceof Uint8Array ? timestampToken : new Uint8Array(timestampToken);
       const resp = derSequence(token, 0);
-      if (!resp) return { trusted: false, at: null, reason: "the timestamp response did not parse" };
+      if (!resp) return { trusted: false, at: null, step: "parse", reason: "the timestamp response did not parse" };
       const statusInfo = derChildren(token, resp)[0];
       let status = null;
       if (statusInfo) {
         const s = derChildren(token, statusInfo).find((p) => p.tag === 0x02);
         if (s) status = token[s.valueStart];
       }
-      if (status !== 0) return { trusted: false, at: null, reason: "the timestamp authority did not return granted status" };
-      /* A granted response is not yet a trusted one: the token's own signature
-       * must be verified against the TSA certificate, which needs that
-       * certificate. Report exactly that. */
-      return { trusted: false, at: null, reason: "a granted response was received, but the TSA signature was not verified in this build" };
+      if (status !== 0) return { trusted: false, at: null, step: "status", reason: "the timestamp authority did not return granted status" };
+      return {
+        trusted: false,
+        at: null,
+        step: "tsa-signature",
+        reason: "a granted response was received, but no verifyToken implementation was injected, so the TSA signature was not verified",
+      };
     },
   };
 }
 
 /** A transport that performs no I/O and invents nothing. */
 export function createOfflineTransport(options = {}) {
-  return createTransport({ http: undefined, trustAnchors: options.trustAnchors || [], referenceTime: options.referenceTime });
+  return createTransport({
+    http: undefined,
+    trustAnchors: options.trustAnchors || [],
+    referenceTime: options.referenceTime,
+    tsaPublicKey: options.tsaPublicKey,
+    verifyToken: options.verifyToken,
+  });
+}
+
+/** Wire the second certification step in without importing it by hand.
+ *
+ *  createVerifiedTransport builds the ordinary transport and injects
+ *  c2pa-tsr.js's verifyTimestampResponse as `verifyToken`, so a caller who has
+ *  the TSA public key gets a real verification instead of a granted-status
+ *  placeholder. Pass `verifyToken` explicitly to override it. */
+export function createVerifiedTransport(options = {}) {
+  return createTransport({ ...options, verifyToken: options.verifyToken || verifyTimestampResponse });
 }
