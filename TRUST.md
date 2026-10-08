@@ -99,6 +99,41 @@ Zwei Eigenschaften sind konstitutiv:
 
 ---
 
+## Ableitungen: MODIFIED auflösbar machen
+
+Ein gescanntes Kartenbild ist nicht das Foto. Zwischen Aufnahme und Anzeige
+liegen Geraderücken, Zuschnitt, Farbkorrektur, Skalierung. **Die meisten Records
+in der echten Welt sind so** — das Geprüfte ist ein bearbeitetes Derivat von
+etwas, das signiert war.
+
+Ein naiver Prüfer liest das als Problem und zeigt MODIFIED. Das ist über die
+Bytes wahr und als Antwort nutzlos: Es beschreibt eine Bearbeitung, als wäre es
+eine Manipulation.
+
+Der Record löst das mit einem Feld am Subjekt:
+
+```json
+"subject": {
+  "kind": "card",
+  "id": "card:pokemon:base-set:4/102",
+  "derived_from": ["<sha256 der Kamera-Aufnahme>"]
+}
+```
+
+Ein Ableitungs-Record verlinkt den aktuellen Hash zurück zur signierten Quelle.
+Der Verifier löst den Verweis **gegen seine eigenen Records** auf. Daraus folgt
+die Regel, die alles trägt:
+
+> **Eine Ableitung bewegt nur `integrity`, niemals `origin`.**
+> Man kann keine Herkunft erben, die man nicht beweisen kann.
+
+Ein fremdes Bild, das einfach dieselbe Abstammung *behauptet*, erbt nichts:
+`origin` bleibt `none`, der Status bleibt UNKNOWN. Und ein Edit ohne auflösbaren
+Verweis bleibt `modified` **ohne** `resolvable`-Markierung — die Unterscheidung
+zwischen „abgeleitet" und „angefasst" ist damit sichtbar statt geraten.
+
+---
+
 ## Der Record
 
 ```json
@@ -127,6 +162,7 @@ Die Feldentscheidungen, die den Standard ausmachen:
 | `evidence` | ist eine **Liste**. Mehrere, auch widersprechende Belege bleiben stehen. Ein Prüfer darf den unbequemen nicht wegwerfen. |
 | `issuer` | ist ein **Verweis**, kein Wert. Der Prüfer löst ihn gegen eine Quelle seiner Wahl auf. |
 | `generation` | steht bei den Beobachtungen, **nicht** im Gitter. Sie kann den Status nie bewegen. |
+| `subject.derived_from` | ist eine **Erklärung, kein Beweis**. Der Verifier löst sie gegen eigene Records auf; sie bewegt `integrity`, nie `origin`. |
 
 ---
 
@@ -145,6 +181,7 @@ in **Beobachtung** und **Bewertung**.
 | Identity | Beobachtung | ja, als Verweis |
 | Evidence | Beobachtung | ja, als Liste |
 | Generation claim | Behauptung | ja, getrennt geführt |
+| Derivation | Erklärung | ja, verifier-aufgelöst |
 | **Trust** | Bewertung | **nein** — Funktion des Prüfers |
 | **Decision** | Bewertung | **nein** — außerhalb |
 
@@ -156,7 +193,8 @@ Stufe 7 tot, egal wie offen die Spezifikation aussieht.
 
 ## Was läuft
 
-Der Prototyp ist gebaut und geprüft. **14 von 14 Testfällen, vier Invarianten.**
+Der Prototyp ist gebaut und geprüft. **14 von 14** Testfällen in der
+Konformitätsliste, **16 von 16** im Ableitungs-Szenario, sieben Invarianten.
 
 ```
 vector              verdict        origin     integrity  generation
@@ -175,10 +213,13 @@ invalid-signature   INVALID        claimed    broken     none
 expired-chain       INVALID        claimed    broken     none
 unknown             UNKNOWN        none       intact     none
 
-inv  verdict is never persisted                     holds
-inv  unsigned claim never forges provenance         holds
-inv  generation never moves origin/integrity        holds
-inv  unsigned claim never downgrades a signed subject holds
+inv  verdict is never persisted                        holds
+inv  unsigned claim never forges provenance            holds
+inv  generation never moves origin/integrity           holds
+inv  unsigned claim never downgrades a signed subject  holds
+inv  derivation moves only integrity                   holds
+inv  derivation never grants origin                    holds
+inv  unresolvable edit stays MODIFIED                  holds
 ```
 
 Die zwei Zeilen, die zusammen gelesen werden müssen: `claim-plus-signer` und
@@ -188,8 +229,10 @@ Verdikte. Die Behauptung selbst bewegt nichts.
 | Datei | Zweck |
 |---|---|
 | `engine.js` | Referenzimplementierung, drei Achsen, keine Abhängigkeiten |
+| `derivation.js` | Ableitungs-Pipeline mit Herkunftskette |
 | `index.html` | Bedienbare Demo — Datei wird lokal gehasht, verlässt den Browser nicht |
 | `conformance.mjs` | Konformitätsliste, in sich geschlossen |
+| `derivation.test.mjs` | Ableitungs-Suite: Scan-Szenario, Ende zu Ende |
 | `record-0.2.schema.json` | JSON Schema 2020-12 |
 | `vectors.js` | Testvektoren, einer pro Status |
 
@@ -203,6 +246,9 @@ Ehrlich, weil diese Liste im Gespräch als Erstes geprüft wird.
   Verifizieren braucht Vertrauensliste, Chain-Building und Zeitstempel-Autorität —
   also Netzwerk und Infrastruktur. Die Engine konsumiert heute das *Ergebnis*
   einer Prüfung (`state`, `chain`) und passt damit auf jeden Verifier.
+- **Derivation über Record-Grenzen.** Heute löst ein Verifier gegen seinen
+  eigenen Store auf. Für plattformübergreifende Ketten braucht es eine
+  Abfrage-Semantik, nicht nur einen Map-Zugriff.
 - **API und Browser-Integration** (Stufen 5 und 4) existieren als Roadmap, nicht
   als Code.
 - **Kein Patent auf das Datenformat.** Das ist eine Entscheidung, keine Lücke:
@@ -220,6 +266,7 @@ bei konstantem Record-Format.
 | 1 | Datei | Manifest und Hash |
 | 2 | URL | Adresse als Subjekt |
 | 3 | Webseite | Prüfung im Kontext |
+| 3 | Karte | Scan-Szenario mit `derived_from` |
 | 4 | Browser | Status im Vertrauensanzeiger |
 | 5 | API | Fremdsysteme reichen Records ein |
 | 6 | Selbstauskunft | Seiten weisen ihre Herkunft selbst aus |
@@ -235,7 +282,9 @@ bauen. Ein offener Standard heißt, dass die eigene Existenz verzichtbar wird.
 1. **Normiert werden Beobachtungen, keine Bewertungen.**
 2. **Abwesenheit eines Nachweises ist ein eigener Zustand**, kein Gegenbeweis.
 3. **Identität ist ein Verweis**, kein Wert — der Prüfer löst ihn auf.
-4. **Der Standard ist selbst verzichtbar.** Wer ihn liest, braucht von uns
+4. **Eine Ableitung erbt keine Herkunft.** Sie erklärt eine Beziehung, sie
+   beweist sie nicht.
+5. **Der Standard ist selbst verzichtbar.** Wer ihn liest, braucht von uns
    keine Lizenz und keine Auszeichnung.
 
 ---
@@ -254,4 +303,4 @@ ist die Vereinheitlichung dessen, was diese Verfahren finden.
 
 ## Lizenz
 
-Offen. Siehe `LICENSE`, sobald festgelegt.
+Apache-2.0. Siehe [LICENSE](LICENSE).
