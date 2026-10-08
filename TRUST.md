@@ -99,6 +99,42 @@ Zwei Eigenschaften sind konstitutiv:
 
 ---
 
+## Der Fingerabdruck: eine Prüfung daneben
+
+**Alles hat einen Fingerabdruck.** Ein Hash ist keine Meinung eines Prüfers über
+einen Inhalt — er ist eine Eigenschaft des Inhalts selbst. Deshalb braucht diese
+Prüfung keinen Verifier, keine Trust-Liste und kein Netzwerk: Sie vergleicht den
+deklarierten Fingerabdruck mit dem Fingerabdruck der vorliegenden Bytes.
+
+| Ergebnis | Bedeutung |
+|---|---|
+| `match` | Der deklarierte Fingerabdruck ist der dieser Bytes |
+| `mismatch` | Der deklarierte Fingerabdruck gehört zu anderen Bytes |
+| `multiple` | Die Belege deklarieren mehr als einen Fingerabdruck |
+| `none` | Nichts wurde deklariert, also nichts zu vergleichen |
+
+**Der Fingerabdruck steht neben dem Gitter, nicht darin.** Zwei Gründe:
+
+Die beiden beantworten verschiedene Fragen. Das Gitter sagt, *in welchem Zustand
+dieser Record ist*. Der Fingerabdruck sagt, *ob der Inhalt der Inhalt ist, der er
+zu sein behauptet*. Und sie haben verschiedene Haltbarkeitsdauern: Der Status
+ändert sich, wenn neue Belege eintreffen — aus CLAIMED kann später VERIFIED
+werden. Der Fingerabdruck ist einfach; er wurde über Bytes gerechnet und ist in
+hundert Jahren dieselbe Tatsache.
+
+Der praktische Nutzen ist der Fall, den das Gitter allein verschluckt:
+
+```
+Status:        CLAIMED      Signatur nicht bestätigt
+Fingerabdruck: mismatch     die Bytes sind andere
+```
+
+Ein System, das nur den Status zeigt, verbirgt hier den wichtigsten Befund.
+Eines, das den Fingerabdruck daneben stellt, zeigt ihn — **ohne den Status zu
+verbiegen**. Der Fingerabdruck kann einen Status nie anheben.
+
+---
+
 ## Ableitungen: MODIFIED auflösbar machen
 
 Ein gescanntes Kartenbild ist nicht das Foto. Zwischen Aufnahme und Anzeige
@@ -179,6 +215,7 @@ Ein Record, der sagt „X ist vertrauenswürdig", wäre eine Meinung.
   "integrity":   "intact",
   "authenticated": true,
   "generation":  "attested_by_signer",
+  "fingerprint": { "result": "match", "detail": "..." },
   "content_hash": "0f2a...",
   "evidence": [
     { "kind": "attestation", "label": "C2PA manifest", "state": "valid",
@@ -197,6 +234,7 @@ Die Feldentscheidungen, die den Standard ausmachen:
 | `evidence` | ist eine **Liste**. Mehrere, auch widersprechende Belege bleiben stehen. Ein Prüfer darf den unbequemen nicht wegwerfen. |
 | `issuer` | ist ein **Verweis**, kein Wert. Der Prüfer löst ihn gegen eine Quelle seiner Wahl auf. |
 | `generation` | steht bei den Beobachtungen, **nicht** im Gitter. Sie kann den Status nie bewegen. |
+| `fingerprint` | steht **neben** dem Gitter. Er meldet, ob der Inhalt der ist, der er zu sein behauptet — und hebt nie einen Status an. |
 | `subject.derived_from` | ist eine **Erklärung, kein Beweis**. Der Verifier löst sie gegen eigene Records auf; sie bewegt `integrity`, nie `origin`. |
 
 ---
@@ -216,6 +254,7 @@ in **Beobachtung** und **Bewertung**.
 | Identity | Beobachtung | ja, als Verweis |
 | Evidence | Beobachtung | ja, als Liste |
 | Verification | Beobachtung | ja, als Policy des Prüfers |
+| Fingerprint | Beobachtung | ja, neben dem Gitter |
 | Generation claim | Behauptung | ja, getrennt geführt |
 | Derivation | Erklärung | ja, verifier-aufgelöst |
 | **Trust** | Bewertung | **nein** — Funktion des Prüfers |
@@ -229,13 +268,14 @@ Stufe 7 tot, egal wie offen die Spezifikation aussieht.
 
 ## Was läuft
 
-Der Prototyp ist gebaut und geprüft. **48 Testfälle in drei Suiten, zwölf
+Der Prototyp ist gebaut und geprüft. **68 Testfälle in vier Suiten, fünfzehn
 Invarianten.**
 
 ```
-conformance.mjs      passed 14/14
-derivation.test.mjs  passed 16/16
-signature.test.mjs   passed 18/18
+conformance.mjs         passed 14/14
+derivation.test.mjs     passed 16/16
+signature.test.mjs      passed 18/18
+fingerprint.test.mjs    passed 20/20
 ```
 
 ```
@@ -267,6 +307,9 @@ inv  unknown stays distinct from invalid               holds
 inv  a throwing verifier never verifies                holds
 inv  an untrusted anchor never verifies                holds
 inv  an expired chain never verifies by default        holds
+inv  the grid is unchanged: nine mappings              holds
+inv  the fingerprint is reported when the status hides it holds
+inv  the fingerprint never lifts a status              holds
 ```
 
 Die zwei Zeilen, die zusammen gelesen werden müssen: `claim-plus-signer` und
@@ -279,10 +322,13 @@ Verdikte. Die Behauptung selbst bewegt nichts.
 | `derivation.js` | Ableitungs-Pipeline mit Herkunftskette |
 | `signature.js` | Signatur-Policy und Verifier-Schnittstelle |
 | `verifier-bridge.js` | Brücke: Verifier-Antwort → Record-Evidence |
+| `fingerprint.js` | Fingerabdruck-Prüfung und Ableitungs-Verweis |
+| `demo-verifier.js` | Demo-Verifier und die vier Policies |
 | `index.html` | Bedienbare Demo — Datei wird lokal gehasht, verlässt den Browser nicht |
 | `conformance.mjs` | Konformitätsliste, in sich geschlossen |
 | `derivation.test.mjs` | Ableitungs-Suite: Scan-Szenario, Ende zu Ende |
 | `signature.test.mjs` | Signatur-Policy-Suite: fail closed |
+| `fingerprint.test.mjs` | Fingerabdruck-Suite: Gitter unverändert |
 | `record-0.2.schema.json` | JSON Schema 2020-12 |
 | `vectors.js` | Testvektoren, einer pro Status |
 
@@ -332,9 +378,11 @@ bauen. Ein offener Standard heißt, dass die eigene Existenz verzichtbar wird.
 3. **Identität ist ein Verweis**, kein Wert — der Prüfer löst ihn auf.
 4. **Eine Ableitung erbt keine Herkunft.** Sie erklärt eine Beziehung, sie
    beweist sie nicht.
-5. **Unbestimmtes Verhalten schlägt geschlossen fehl.** Ein fehlgeschlagener
+5. **Ein Fingerabdruck steht neben dem Status, nicht in ihm.** Er meldet, ob der
+   Inhalt der ist, der er zu sein behauptet — und hebt nie einen Status an.
+6. **Unbestimmtes Verhalten schlägt geschlossen fehl.** Ein fehlgeschlagener
    oder unbekannter Check erzeugt nie `verified`.
-6. **Der Standard ist selbst verzichtbar.** Wer ihn liest, braucht von uns
+7. **Der Standard ist selbst verzichtbar.** Wer ihn liest, braucht von uns
    keine Lizenz und keine Auszeichnung.
 
 ---
