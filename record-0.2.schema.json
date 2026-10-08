@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trust.example.org/schema/record-0.2.json",
   "title": "TRUST Record",
-  "description": "A record of what a verifier observed about a subject. It carries observations only. 'verdict' is deliberately NOT a member of this schema: the display status is derived from origin + integrity at read time and must never be persisted. The 'generation' member reports what was CLAIMED about how the content was made; it is not a measurement and never affects origin or integrity.",
+  "description": "A record of what a verifier observed about a subject. It carries observations only. 'verdict' is deliberately NOT a member of this schema: the display status is derived from origin + integrity at read time and must never be persisted. The 'generation' member reports what was CLAIMED about how the content was made; it is not a measurement and never affects origin or integrity. 'subject.derived_from' is a DECLARATION the verifier resolves against its own records; it may move integrity, never origin.",
   "type": "object",
   "additionalProperties": false,
   "required": ["spec_version", "subject", "origin", "integrity", "generation", "evidence", "checked_at"],
@@ -19,7 +19,12 @@
       "properties": {
         "kind": { "enum": ["file", "url", "page", "card", "image", "stream"] },
         "id": { "type": "string", "minLength": 1 },
-        "media_type": { "type": "string" }
+        "media_type": { "type": "string" },
+        "derived_from": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "description": "SHA-256 hashes of the sources this content was derived from, for example a camera capture that was straightened, cropped or colour-corrected. A declaration, not a proof: the verifier resolves each entry against records it holds itself. It may move integrity, never origin."
+        }
       }
     },
     "origin": {
@@ -37,7 +42,7 @@
     },
     "generation": {
       "enum": ["attested_by_signer", "asserted", "none"],
-      "description": "What was CLAIMED about how the content was made. 'attested_by_signer' means the claim sat inside a valid attestation, so it is signed and non-repudiable — still a claim, not a measurement. 'asserted' means the claim stands alone and anyone could have added it. 'none' means nothing was claimed and does NOT mean the content is human-made."
+      "description": "What was CLAIMED about how the content was made. 'attested_by_signer' means the claim sat inside a valid attestation: signed and non-repudiable, still a claim and not a measurement. 'asserted' means the claim stands alone and anyone could have added it. 'none' means nothing was claimed and does NOT mean the content is human-made."
     },
     "content_hash": {
       "type": "string",
