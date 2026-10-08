@@ -312,17 +312,24 @@ Stufe 7 tot, egal wie offen die Spezifikation aussieht.
 
 ## Was läuft
 
-Der Prototyp ist gebaut und geprüft. **138 Testfälle in sechs Suiten, zwanzig
-Invarianten.**
+Der Prototyp ist gebaut und geprüft. Die Zahlen unten sind **gemessen, nicht
+geschätzt** — und wo eine Zahl fehlt, steht sie als offen und nicht als rund.
 
 ```
-conformance.mjs          passed 14/14
-derivation.test.mjs      passed 16/16
-signature.test.mjs       passed 18/18
-fingerprint.test.mjs     passed 20/20
-c2pa-transport.test.mjs  passed 37/37
-c2pa-tsr.test.mjs        passed 33/33
+conformance.mjs            passed 14/14
+derivation.test.mjs        passed 16/16
+signature.test.mjs         passed 18/18
+fingerprint.test.mjs       passed 20/20
+c2pa-transport.test.mjs    passed 37/37   (Repo-Fassung, @0.2)
+c2pa-tsr.test.mjs          passed 33/33
 ```
+
+**Zwei Suiten sind im Arbeitsbereich weiter als im Repository.** Die Suite des
+Arbeitsbereichs prüft den Transport auf `@0.3` und deckt zusätzlich die
+Weitergabe an einen injizierten Verifier ab. Sie meldete im letzten Lauf
+**37 grün von 48** — die elf neuen Assertions sind noch nicht einzeln bestätigt,
+weil der Lauf abgeschnitten wurde. Diese Zeile bleibt stehen, bis sie gemessen
+sind; sie wird nicht auf 48/48 gerundet.
 
 ```
 vector              verdict        origin     integrity  generation
@@ -376,7 +383,7 @@ Verdikte. Die Behauptung selbst bewegt nichts.
 | `fingerprint.js` | Fingerabdruck-Prüfung und Ableitungs-Verweis |
 | `c2pa-verifier.js` | Manifest-, Signatur- und Erzeugungsschicht über Bytes |
 | `c2pa-providers.js` | Signatur-, Ketten- und Zeitstempel-Provider |
-| `c2pa-transport.js` | Netz-Schicht: Kette, CRL, Zeitstempel-Status |
+| `c2pa-transport.js` | Netz-Schicht: Kette, CRL-Wertsuche, Zeitstempel |
 | `c2pa-tsr.js` | **Zweiter Zertifizierungsschritt: TSA-Signaturnachweis** |
 | `demo-verifier.js` | Demo-Verifier und die vier Policies |
 | `index.html` | Bedienbare Demo — Datei wird lokal gehasht, verlässt den Browser nicht |
@@ -395,11 +402,15 @@ Verdikte. Die Behauptung selbst bewegt nichts.
 
 Ehrlich, weil diese Liste im Gespräch als Erstes geprüft wird.
 
-- **Ein echtes Netz-I/O.** Alle drei Provider und der TSA-Nachweis sind gebaut
-  und geprüft, aber die `http`-Funktion wird von außen übergeben. Der Bauabschnitt
-  ist eine `fetch`-Implementierung mit Rate-Limit und Frist, kein Algorithmus.
+- **Ein Durchlauf gegen einen echten Dienst.** Alle Bausteine sind gebaut und
+  geprüft, aber jede Prüfung arbeitet bisher mit selbstgebauten Bytes: kein
+  echtes Zertifikat, kein echter Zeitstempel, keine reale CRL.
+- **Ein echtes Netz-I/O.** Die `http`-Funktion wird von außen übergeben. Der
+  Bauabschnitt ist eine `fetch`-Implementierung mit Rate-Limit und Frist, kein
+  Algorithmus.
 - **CRL-Signaturprüfung und Zertifikatssignaturprüfung.** Die Kettenordnung und
-  die Wertsuche in der CRL laufen; die Signatur über die CRL selbst nicht.
+  die Wertsuche in der CRL laufen; die Signatur über die CRL selbst nicht, und
+  die Signaturprüfung über die Zertifikate ebenfalls nicht.
 - **Zwei interoperable Implementierungen.** Ein Standard mit einer Umsetzung ist
   eine Beschreibung. Stufe 7 braucht eine zweite, die aus denselben Bytes
   denselben Record erzeugt.
