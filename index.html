@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#101821">
+<title>TRUST:// Prototype</title>
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+  :root{
+    --bg:#101821; --panel:#17222c; --line:#26333f; --ink:#e9e6df;
+    --muted:#93a1ae; --accent:#c05621; --paper:#f4f2ee;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 "Calibri",system-ui,sans-serif;padding:32px 20px 64px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-family:Georgia,serif;font-weight:400;letter-spacing:.5px;margin:0 0 4px;font-size:30px}
+  .sub{color:var(--muted);margin:0 0 28px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin-bottom:18px}
+  h2{font-family:Georgia,serif;font-weight:400;font-size:18px;margin:0 0 14px;color:var(--paper)}
+  h3{font-family:Georgia,serif;font-weight:400;font-size:15px;margin:0 0 10px;color:var(--paper)}
+  label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin-bottom:6px}
+  textarea,select,input[type=text],input[type=file]{width:100%;background:#0c141c;color:var(--ink);
+    border:1px solid var(--line);border-radius:6px;padding:10px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
+  textarea{min-height:110px;resize:vertical}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+  @media(max-width:760px){.row,.row3{grid-template-columns:1fr}}
+  button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:11px 20px;
+    font:600 14px/1 "Calibri",sans-serif;cursor:pointer;margin-top:14px}
+  button:hover{filter:brightness(1.1)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:16px}
+  .cell{border:1px solid var(--line);border-radius:8px;padding:12px;background:#0c141c}
+  .cell .k{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+  .cell .v{font-family:ui-monospace,monospace;font-size:14px;margin-top:5px;word-break:break-all}
+  .verdict{margin-top:18px;padding:18px 20px;border-radius:10px;background:#0c141c;
+    border:1px solid var(--line);display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  .verdict .dot{width:16px;height:16px;border-radius:50%;flex:0 0 auto}
+  .verdict .name{font-family:Georgia,serif;font-size:24px;letter-spacing:1px}
+  .verdict .why{color:var(--muted);font-size:14px;flex:1 1 320px}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.07em}
+  pre{background:#0c141c;border:1px solid var(--line);border-radius:8px;padding:14px;
+    overflow:auto;font:12.5px/1.6 ui-monospace,Menlo,Consolas,monospace;color:#cfe3d8;max-height:460px}
+  .note{color:var(--muted);font-size:13px;margin-top:10px}
+  .cmp{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+  @media(max-width:760px){.cmp{grid-template-columns:1fr}}
+  .cmp .side{border:1px solid var(--line);border-radius:8px;padding:14px;background:#0c141c}
+  .cmp .side h4{font-family:Georgia,serif;font-weight:400;font-size:14px;margin:0 0 4px}
+  .cmp .side .val{font-family:Georgia,serif;font-size:20px;letter-spacing:.5px}
+  .cmp .side p{color:var(--muted);font-size:12.5px;margin:8px 0 0}
+  .changed{box-shadow:0 0 0 1px var(--accent) inset}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>TRUST:// Prototype</h1>
+  <p class="sub">Stufe 1&ndash;3 &middot; Record Format 0.2 &middot; drei Achsen, Signatur-Policy, Fingerabdruck</p>
+
+  <div class="card">
+    <h2>1 &nbsp;Subjekt</h2>
+    <p class="note" style="margin-top:0">Der Gegenstand der Pruefung ist eine Bindung zwischen Subjekt und Inhalt: eine Identitaet, die festlegt, was geprueft wird.</p>
+    <div class="row">
+      <div>
+        <label for="subjkind">Subjekt-Typ</label>
+        <select id="subjkind">
+          <option value="file">Datei (Stufe 1)</option>
+          <option value="url">URL (Stufe 2)</option>
+          <option value="page">Webseite (Stufe 3)</option>
+          <option value="card">Karte (Stufe 3)</option>
+        </select>
+        <label for="subjid" style="margin-top:14px">Kanonische Subjekt-Identitaet</label>
+        <input id="subjid" type="text" value="https://example.org/gallery/hero-image-77">
+      </div>
+      <div>
+        <label for="file">Datei laden</label>
+        <input id="file" type="file">
+        <p class="note">Wird eine Datei geladen, ersetzt ihr SHA-256 die getippte Bindung. Die Datei verlaesst dieses Browserfenster nicht.</p>
+        <label for="derived" style="margin-top:14px">Derived from (SHA-256, optional)</label>
+        <input id="derived" type="text" placeholder="Hash der Quelle, aus der abgeleitet wurde">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2 &nbsp;Belege und Policy</h2>
+    <p class="note" style="margin-top:0">Rohe Belege, wie ein Pruefer sie vorfindet. Der Standard bewertet sie nicht, er nimmt sie auf &mdash; die Policy entscheidet, was davon als verifiziert gilt.</p>
+    <div class="row3">
+      <div><label for="preset">Beispiel-Fall</label><select id="preset"></select></div>
+      <div><label for="policy">Vertrauens-Policy</label><select id="policy"></select></div>
+      <div><label for="issuer">Aussteller (Verweis, nicht Wert)</label><input id="issuer" type="text" value="did:web:example.org"></div>
+    </div>
+    <label for="evidence" style="margin-top:16px">Evidence (JSON)</label>
+    <textarea id="evidence"></textarea>
+    <button id="run">Record ableiten</button>
+  </div>
+
+  <div class="card" id="resultcard" hidden>
+    <h2>3 &nbsp;Record</h2>
+    <div class="verdict">
+      <span class="dot" id="dot"></span>
+      <span class="name" id="vname">UNKNOWN</span>
+      <span class="why" id="vwhy"></span>
+    </div>
+    <div class="grid" id="raw"></div>
+
+    <h3 style="margin-top:24px">Fingerabdruck</h3>
+    <div class="grid" id="fpcells"></div>
+    <p class="note" id="fpdetail"></p>
+
+    <h3 style="margin-top:24px">Signaturpruefung</h3>
+    <div class="grid" id="sigcells"></div>
+    <p class="note" id="sigsummary"></p>
+
+    <h3 style="margin-top:24px">Policy-Vergleich: derselbe Record, andere Entscheidung</h3>
+    <p class="note" style="margin-top:0">Die Trust-Liste steht nicht im Record. Zwei Pruefer mit verschiedenen Policies kommen ueber dieselben Belege zu verschiedenen Ergebnissen &mdash; und beide haben recht.</p>
+    <div class="cmp" id="cmp"></div>
+
+    <h3 style="margin-top:24px">Abgeleiteter Record</h3>
+    <pre id="json"></pre>
+    <p class="note" id="prov"></p>
+  </div>
+
+  <div class="card">
+    <h2>Status-Gitter (unveraendert)</h2>
+    <table>
+      <thead><tr><th>Integritaet</th><th>Herkunft belegt</th><th>Herkunft behauptet</th><th>Keine Herkunft</th></tr></thead>
+      <tbody>
+        <tr><td>unveraendert</td><td>VERIFIED / AUTHENTICATED</td><td>CLAIMED</td><td>UNKNOWN</td></tr>
+        <tr><td>veraendert</td><td>MODIFIED</td><td>CLAIMED</td><td>UNKNOWN</td></tr>
+        <tr><td>Kette gebrochen</td><td>INVALID</td><td>INVALID</td><td>UNKNOWN</td></tr>
+      </tbody>
+    </table>
+    <p class="note">Der Fingerabdruck steht daneben und veraendert das Gitter nicht. Er kann einen Status nie anheben.</p>
+  </div>
+</div>
+
+<script type="module">
+import { deriveRecord, recordJson, PRESETS, hashBytes, canonicalSubjectUrl } from "./engine.js";
+import { createTrustList, withPolicy, annotateEvidence, verifyAttestations, verifierSummary } from "./verifier-bridge.js";
+import { createDemoVerifier, DEMO_VERIFICATIONS, DEMO_POLICIES } from "./demo-verifier.js";
+
+const $ = (id) => document.getElementById(id);
+const COLORS = { VERIFIED:"#3fa96b", AUTHENTICATED:"#3f7fa9", CLAIMED:"#d8b43f", MODIFIED:"#d98032", INVALID:"#c0453f", UNKNOWN:"#8a97a3" };
+
+for (const [key, p] of Object.entries(PRESETS)) {
+  const o = document.createElement("option");
+  o.value = key; o.textContent = p.label;
+  $("preset").appendChild(o);
+}
+for (const [key, p] of Object.entries(DEMO_POLICIES)) {
+  const o = document.createElement("option");
+  o.value = key; o.textContent = p.label;
+  $("policy").appendChild(o);
+}
+
+function applyPreset(key) {
+  const p = PRESETS[key];
+  if (!p) return;
+  $("subjkind").value = p.subject.kind;
+  $("subjid").value = p.subject.id;
+  $("issuer").value = p.issuer ?? "";
+  $("derived").value = "";
+  $("evidence").value = JSON.stringify(p.evidence, null, 2);
+}
+$("preset").addEventListener("change", () => applyPreset($("preset").value));
+applyPreset("machineSigned");
+
+$("file").addEventListener("change", async (e) => {
+  const f = e.target.files?.[0];
+  if (!f) return;
+  const hash = await hashBytes(new Uint8Array(await f.arrayBuffer()));
+  $("subjkind").value = "file";
+  $("subjid").value = hash;
+});
+
+const FP_COLORS = { match:"#3fa96b", mismatch:"#c0453f", multiple:"#d98032", none:"#8a97a3" };
+
+async function evaluate(policyKey) {
+  let evidence;
+  try { evidence = JSON.parse($("evidence").value || "[]"); }
+  catch (err) { alert("Evidence ist kein gueltiges JSON: " + err.message); return null; }
+
+  const verifier = createDemoVerifier(DEMO_VERIFICATIONS);
+  const policy = withPolicy(DEMO_POLICIES[policyKey].config(createTrustList));
+  const rawResults = await verifyAttestations(evidence, verifier, policy);
+  const annotated = await annotateEvidence(evidence, verifier, policy);
+
+  let subjectId = $("subjid").value.trim();
+  if ($("subjkind").value === "url" || $("subjkind").value === "page") {
+    try { subjectId = canonicalSubjectUrl(subjectId); } catch { /* keep raw */ }
+  }
+  const derivedFrom = $("derived").value.trim();
+  const input = {
+    subject: { kind: $("subjkind").value, id: subjectId, ...(derivedFrom ? { derived_from: [derivedFrom] } : {}) },
+    evidence: annotated,
+    issuer: $("issuer").value.trim(),
+    checked_at: new Date().toISOString(),
+  };
+  if ($("subjkind").value === "file") input.content_hash = subjectId;
+
+  const out = deriveRecord(input);
+  return { out, summary: verifierSummary(rawResults), rawResults };
+}
+
+$("run").addEventListener("click", async () => {
+  const r = await evaluate($("policy").value);
+  if (!r) return;
+  const { out } = r;
+  const status = out.derivation.status;
+
+  $("dot").style.background = COLORS[status];
+  $("vname").textContent = status;
+  $("vname").style.color = COLORS[status];
+  $("vwhy").textContent = out.derivation.why;
+
+  $("raw").innerHTML = [
+    ["origin", out.record.origin],
+    ["integrity", out.record.integrity],
+    ["generation", out.record.generation],
+    ["authenticated", String(out.record.authenticated)],
+    ["gespeichert", "origin + integrity + generation"],
+    ["berechnet", "verdict (nie serialisiert)"],
+    ["Regel", out.record.spec_version],
+  ].map(([k,v]) => `<div class="cell"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+  const sig = r.rawResults.filter((x) => !x.skipped);
+  $("sigcells").innerHTML = sig.length
+    ? sig.map((s) => `<div class="cell"><div class="k">${s.evidence_id ?? "attestation"}</div><div class="v">${s.state} &middot; ${s.chain}</div><div class="note" style="margin-top:6px">${s.reason}</div></div>`).join("")
+    : `<div class="cell"><div class="k">Signaturpruefung</div><div class="v">keine Attestierung vorhanden</div></div>`;
+  $("sigsummary").textContent = r.summary.summary;
+
+  await renderFingerprint($("policy").value);
+  await renderComparison();
+
+  $("json").textContent = recordJson({ ...out.record, verdict: { status, spec_version: out.record.spec_version } });
+  $("prov").textContent = out.derivation.provenance;
+
+  $("resultcard").hidden = false;
+  $("resultcard").scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+async function renderFingerprint(policyKey) {
+  const r = await evaluate(policyKey);
+  if (!r) return;
+  const fp = r.out.fingerprint;
+  $("fpcells").innerHTML = [
+    ["ergebnis", fp.result],
+    ["deklariert", (fp.declared ?? []).length ? fp.declared.map((d) => d.slice(0, 12) + "...").join(", ") : "keiner"],
+    ["berechnet", fp.computed ? fp.computed.slice(0, 12) + "..." : "keine Bytes"],
+    ["unabhaengig", "kein Verifier noetig"],
+  ].map(([k,v]) => `<div class="cell"><div class="k">${k}</div><div class="v" style="color:${k === "ergebnis" ? (FP_COLORS[fp.result] ?? "#8a97a3") : "inherit"}">${v}</div></div>`).join("");
+  $("fpdetail").textContent = fp.detail;
+}
+
+async function renderComparison() {
+  const keys = Object.keys(DEMO_POLICIES);
+  const results = await Promise.all(keys.map((k) => evaluate(k)));
+  const activeIdx = keys.indexOf($("policy").value);
+  const base = results[activeIdx];
+  $("cmp").innerHTML = keys.map((k, i) => {
+    const st = results[i]?.out.derivation.status ?? "\u2014";
+    const changed = results[i] && base && st !== base.out.derivation.status;
+    return `<div class="side${changed ? " changed" : ""}">
+      <h4>${DEMO_POLICIES[k].label}</h4>
+      <div class="val" style="color:${COLORS[st] ?? "#8a97a3"}">${st}</div>
+      <p>origin ${results[i]?.out.record.origin ?? "\u2014"} &middot; integrity ${results[i]?.out.record.integrity ?? "\u2014"}<br>
+      Fingerabdruck: ${results[i]?.out.fingerprint.result ?? "\u2014"}</p>
+    </div>`;
+  }).join("");
+}
+
+$("policy").addEventListener("change", async () => {
+  await renderFingerprint($("policy").value);
+  await renderComparison();
+});
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+</script>
+</body>
+</html>
