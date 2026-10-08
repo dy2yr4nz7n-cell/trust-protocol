@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trust.example.org/schema/record-0.2.json",
+  "title": "TRUST Record",
+  "description": "A record of what a verifier observed about a subject. It carries observations only. 'verdict' is deliberately NOT a member of this schema: the display status is derived from origin + integrity at read time and must never be persisted. The 'generation' member reports what was CLAIMED about how the content was made; it is not a measurement and never affects origin or integrity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec_version", "subject", "origin", "integrity", "generation", "evidence", "checked_at"],
+  "properties": {
+    "spec_version": {
+      "const": "TRUST-Record/0.2",
+      "description": "Format version. A consumer MUST reject a major version it does not implement rather than guess."
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "description": "What was checked. 'id' is canonical: for URLs, lowercase scheme and host, default port removed, fragment dropped, query parameters sorted. Two verifiers must arrive at the same string from the same input, or records cannot be compared.",
+      "properties": {
+        "kind": { "enum": ["file", "url", "page", "card", "image", "stream"] },
+        "id": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string" }
+      }
+    },
+    "origin": {
+      "enum": ["verified", "claimed", "none"],
+      "description": "Can the binding between subject and signer be proven at all? 'none' is a measurement, not a suspicion."
+    },
+    "integrity": {
+      "enum": ["intact", "modified", "broken"],
+      "description": "Does the content still match what was signed? 'modified' is a state, not an accusation: a legitimate edit after signing produces exactly this value."
+    },
+    "authenticated": {
+      "type": "boolean",
+      "default": false,
+      "description": "True when a valid attestation was accompanied by a separate identity proof. Orthogonal to the grid; it promotes VERIFIED to AUTHENTICATED."
+    },
+    "generation": {
+      "enum": ["attested_by_signer", "asserted", "none"],
+      "description": "What was CLAIMED about how the content was made. 'attested_by_signer' means the claim sat inside a valid attestation, so it is signed and non-repudiable — still a claim, not a measurement. 'asserted' means the claim stands alone and anyone could have added it. 'none' means nothing was claimed and does NOT mean the content is human-made."
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 of the bytes presented at check time, lowercase hex. Absent when no bytes were presented."
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Raw evidence as found. Multiple, including mutually contradictory, entries may coexist. A verifier does not get to discard the one that disagrees.",
+      "items": {
+        "oneOf": [
+          {
+            "title": "attestation",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind"],
+            "properties": {
+              "kind": { "const": "attestation" },
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "state": { "enum": ["valid", "invalid", "unknown"], "default": "unknown" },
+              "chain": { "enum": ["intact", "expired", "unavailable"], "default": "unavailable" },
+              "content_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "identity_proof": { "type": ["boolean", "string"] },
+              "generation": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "A generation claim carried INSIDE the signed payload. This is what makes it attested_by_signer.",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "description": "A C2PA digitalSourceType value, e.g. trainedAlgorithmicMedia, algorithmicMedia, compositeWithTrainedAlgorithmicMedia, digitalCapture, computationalCapture. Unknown values are passed through verbatim, never coerced."
+                  }
+                }
+              },
+              "issued_at": { "type": "string", "format": "date-time" }
+            }
+          },
+          {
+            "title": "assertion",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind"],
+            "properties": {
+              "kind": { "const": "assertion" },
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "issued_at": { "type": "string", "format": "date-time" }
+            }
+          },
+          {
+            "title": "generation_claim",
+            "description": "An authorship claim with NO cryptographic binding. A detector score belongs here, as a reported number, never as a measurement of truth.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind"],
+            "properties": {
+              "kind": { "const": "generation_claim" },
+              "generation_kind": { "type": "string" },
+              "source": { "type": "string" },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+              "issued_at": { "type": "string", "format": "date-time" }
+            }
+          },
+          {
+            "title": "absence",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind"],
+            "properties": {
+              "kind": { "const": "absence" },
+              "label": { "type": "string" }
+            }
+          }
+        ]
+      }
+    },
+    "issuer": {
+      "type": ["string", "null"],
+      "description": "A REFERENCE to the identity issuer (e.g. did:web:...), never an identity value. The verifier resolves it against a source of their own choosing; the standard does not vouch for it."
+    },
+    "checked_at": { "type": "string", "format": "date-time" }
+  }
+}
