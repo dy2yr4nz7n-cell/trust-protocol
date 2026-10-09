@@ -373,10 +373,27 @@ export function createOfflineTransport(options = {}) {
 
 /** Wire the second certification step in without importing it by hand.
  *
- *  createVerifiedTransport builds the ordinary transport and injects
- *  c2pa-tsr.js's verifyTimestampResponse as `verifyToken`, so a caller who has
- *  the TSA public key gets a real verification instead of a granted-status
- *  placeholder. Pass `verifyToken` explicitly to override it. */
+ *  createVerifiedTransport builds the ordinary transport and injects an adapter
+ *  around c2pa-tsr.js's verifyTimestampResponse as `verifyToken`, so a caller
+ *  who has the TSA public key gets a real verification instead of a
+ *  granted-status placeholder. Pass `verifyToken` explicitly to override it.
+ *
+ *  WHY AN ADAPTER AND NOT THE FUNCTION ITSELF: the transport calls verifyToken
+ *  with ONE object — { signature, payload, timestampToken, tsaPublicKey } —
+ *  while verifyTimestampResponse takes the token bytes as its FIRST argument and
+ *  an options object as its second. Handing the function straight in gave it the
+ *  whole call object as "the token", so every call ended at step "parse" and
+ *  nothing was ever verified. The integration suite caught this; without it, the
+ *  docs would have kept claiming a verification that never ran. */
 export function createVerifiedTransport(options = {}) {
-  return createTransport({ ...options, verifyToken: options.verifyToken || verifyTimestampResponse });
+  const adapter = async ({ signature, timestampToken, tsaPublicKey }) => {
+    let expectedDigestHex = null;
+    if (signature) {
+      const bytes = signature instanceof Uint8Array ? signature : new Uint8Array(signature);
+      const d = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+      expectedDigestHex = [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+    return verifyTimestampResponse(timestampToken, { tsaPublicKey, expectedDigestHex });
+  };
+  return createTransport({ ...options, verifyToken: options.verifyToken || adapter });
 }
