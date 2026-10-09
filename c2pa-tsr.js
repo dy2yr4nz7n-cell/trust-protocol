@@ -1,45 +1,32 @@
 /* TRUST:// TSR — the second certification step, implemented.
  *
- * What was missing until now: the transport PARSED an RFC 3161 status but never
- * verified the token's own signature. That is the step a reviewer asks about
- * first, and it is the difference between "the authority said granted" and "the
- * authority said granted AND we proved it said so".
+ * WHAT WAS MISSING: the transport PARSED an RFC 3161 status but never verified
+ * the token's own signature. That is the difference between "the authority said
+ * granted" and "the authority said granted AND we proved it said so".
  *
  * THE TWO STEPS, KEPT APART
  * -------------------------
- *   1. STATUS     parse TimeStampResp, read PKIStatus            (was built)
+ *   1. STATUS     parse TimeStampResp, read PKIStatus            (parsed here)
  *   2. TSA PROOF  verify the token's CMS SignedData signature
- *                 against the TSA certificate's public key      (this file)
+ *                 against the TSA key the CALLER trusts          (this file)
  *
- * A granted status without step 2 is exactly the kind of claim this whole
- * project refuses to make. So a token is `trusted` only when BOTH hold.
+ * A granted status without step 2 is a claim by someone else. A token is
+ * `trusted` only when BOTH hold. Three fail-open paths were closed after the
+ * integration suite caught them (see STATUS.md).
  *
- * WHAT THE TOKEN ACTUALLY CONTAINS
- * --------------------------------
- * TimeStampResp
- *   SEQUENCE
- *     PKIStatusInfo   SEQUENCE { status INTEGER, statusString?, failInfo? }
- *     timeStampToken  ContentInfo
- *       SEQUENCE
- *         contentType   OID 1.2.840.113549.1.7.2  (signedData)
- *         content       [0] EXPLICIT SignedData
- *           SEQUENCE
- *             version           INTEGER
- *             digestAlgorithms  SET
- *             encapContentInfo  SEQUENCE { eContentType OID, eContent [0] OCTET STRING }
- *               eContent is the TSTInfo — a DER SEQUENCE carrying
- *               { version, policy, messageImprint{algorithm, hashedMessage},
- *                 serialNumber, genTime, ... }
- *             certificates      [0] IMPLICIT SET of Certificate
- *             signerInfos       SET of SignerInfo
- *               SEQUENCE { version, sid, digestAlgorithm, signedAttrs [0], signatureAlgorithm, signature OCTET STRING }
+ * THE CHAIN A TOKEN MUST CLOSE
+ * ----------------------------
+ *   status granted
+ *   -> token present
+ *   -> messageImprint == digest(the signature bytes)      <- binds token to THESE bytes
+ *   -> signed message-digest == digest(TSTInfo)
+ *   -> CMS signature holds over the signedAttrs in SET OF form
+ *   -> the key used is one the CALLER supplied
  *
- * The messageImprint.hashedMessage must equal the digest of the signature bytes
- * the token was made over. That is the link back to the COSE signature — the
- * timestamp does not cover the file, it covers the SIGNATURE.
+ * Each failure returns the STEP that blocked, never a bare false.
  */
 
-export const TSR_VERSION = "trust/tsr@0.2";
+export const TSR_VERSION = "trust/tsr@0.3";
 
 /* ================================================================== *
  * DER — the walk this file needs
@@ -97,9 +84,8 @@ function derInteger(bytes, tlvNode) {
 }
 
 /** GeneralizedTime on the wire is the DER form: YYYYMMDDHHMMSSZ — fifteen
- *  characters, no separators. The dashed and coloned form is what a human
- *  reads, not what the token says; slicing the display form shifts every
- *  field, which is how this was caught. */
+ *  characters, no separators. The dashed form is what a human reads, not what
+ *  the token says; slicing the display form shifts every field. */
 function derTime(bytes, tlvNode) {
   const text = new TextDecoder().decode(bytes.slice(tlvNode.valueStart, tlvNode.valueEnd));
   if (tlvNode.tag === 0x18 && text.length >= 14) {
@@ -113,15 +99,13 @@ function derTime(bytes, tlvNode) {
   return null;
 }
 
-/** Re-encode a TLV exactly as it arrived. Signed attributes are signed in their
- *  IMPLICIT [0] form but verified in their explicit SET OF form — the tag byte
- *  is the only difference, and getting that wrong is why so many CMS checks
- *  fail on a token that is perfectly valid. */
+/** Signed attributes are signed in their IMPLICIT [0] form and verified in
+ *  their explicit SET OF form. The tag byte is the only difference, and getting
+ *  that wrong makes a valid token fail. */
 function reencodeAsSet(bytes, tlvNode) {
   const out = bytes.slice(tlvNode.start + 1, tlvNode.end);
-  const setTag = 0x31;
   const full = new Uint8Array(1 + out.length);
-  full[0] = setTag;
+  full[0] = 0x31;
   full.set(out, 1);
   return full;
 }
@@ -130,12 +114,10 @@ function reencodeAsSet(bytes, tlvNode) {
  * TSTInfo — what the token says
  * ================================================================== */
 
-/** Pull the TSTInfo out of a TimeStampToken and read its messageImprint. */
 export function parseTstInfo(bytes) {
   const root = derTlv(bytes, 0);
   if (!root || root.tag !== 0x30) return { ok: false, reason: "the token is not a DER SEQUENCE" };
 
-  /* ContentInfo: contentType OID + [0] EXPLICIT content */
   const ci = derChildren(bytes, root);
   const contentType = ci[0] ? derOid(bytes, ci[0]) : null;
   const wrapper = ci.find((c) => c.tag === 0xa0);
@@ -161,9 +143,8 @@ export function parseTstInfo(bytes) {
   const policy = fields[1] ? derOid(tstInfoBytes, fields[1]) : null;
   /* The messageImprint is SEQUENCE { AlgorithmIdentifier, OCTET STRING }. The
    * AlgorithmIdentifier is itself a SEQUENCE, so its OID is a child of the
-   * imprint, not of the TSTInfo. Reading them from the wrong level makes every
-   * token look like an imprint mismatch — a total failure, not an occasional
-   * one, which is how it was found. */
+   * imprint, not of the TSTInfo. Reading it from the wrong level makes every
+   * token look like an imprint mismatch. */
   const imprintSeq = fields[2] && fields[2].tag === 0x30 ? derChildren(tstInfoBytes, fields[2]) : [];
   const digestAlgorithm = imprintSeq.length && imprintSeq[0].tag === 0x30
     ? derOid(tstInfoBytes, derChildren(tstInfoBytes, imprintSeq[0])[0] || imprintSeq[0])
@@ -176,21 +157,11 @@ export function parseTstInfo(bytes) {
 
   if (!hashedMessage) return { ok: false, reason: "TSTInfo carries no messageImprint" };
 
-  return {
-    ok: true,
-    contentType,
-    policy,
-    digestAlgorithm,
-    hashedMessage,
-    serialNumber,
-    genTime,
-    tstInfoBytes,
-    signedData,
-    sd,
-  };
+  return { ok: true, contentType, policy, digestAlgorithm, hashedMessage, serialNumber, genTime, tstInfoBytes, signedData, sd };
 }
 
-/** Extract the signer's certificate and the signature material from SignedData. */
+/** Pull the signer certificate and signature material out of SignedData. The
+ *  certificate is PARSED but is never used as the trust anchor — see below. */
 export function parseSignerInfo(bytes, parsed) {
   const sd = parsed.sd;
 
@@ -224,9 +195,8 @@ export function parseSignerInfo(bytes, parsed) {
   };
 }
 
-/** The message-digest attribute inside the signed attributes, when present.
- *  CMS signs the ATTRIBUTES, not the content, so this is the value that must
- *  match the digest of the TSTInfo. */
+/** The message-digest attribute inside signedAttrs, when present. CMS signs the
+ *  ATTRIBUTES, so this is the value that must match the digest of the TSTInfo. */
 export function readMessageDigestAttribute(bytes, signedAttrs) {
   if (!signedAttrs) return null;
   for (const attr of derChildren(bytes, signedAttrs)) {
@@ -242,7 +212,7 @@ export function readMessageDigestAttribute(bytes, signedAttrs) {
 }
 
 /* ================================================================== *
- * Digest helpers
+ * Digest and key helpers
  * ================================================================== */
 
 const DIGEST_NAMES = {
@@ -261,6 +231,29 @@ const SIGNATURE_ALGORITHMS = {
   "1.2.840.113549.1.1.13": { name: "RSASSA-PKCS1-v1_5", hash: "SHA-512" },
 };
 
+/** An X.509 certificate is NOT a SubjectPublicKeyInfo, and WebCrypto's "spki"
+ *  import wants the latter. This reads the SPKI out of a certificate so a caller
+ *  can pin the TSA it trusts:  tsaPublicKey: spkiFromCertificate(trustedCertDer).
+ *  Returns null for anything that is not a parseable certificate. It does NOT
+ *  validate the certificate — choosing which one to trust is the caller's job. */
+export function spkiFromCertificate(der) {
+  const bytes = der instanceof Uint8Array ? der : new Uint8Array(der);
+  const cert = derTlv(bytes, 0);
+  if (!cert || cert.tag !== 0x30) return null;
+  const tbs = derChildren(bytes, cert)[0];
+  if (!tbs || tbs.tag !== 0x30) return null;
+  const f = derChildren(bytes, tbs);
+  let i = 0;
+  if (f[i] && f[i].tag === 0xa0) i++;   // [0] version
+  i++;                                   // serialNumber
+  i++;                                   // signature algorithm
+  i++;                                   // issuer
+  i++;                                   // validity
+  i++;                                   // subject
+  const spki = f[i];
+  return spki && spki.tag === 0x30 ? bytes.slice(spki.start, spki.end) : null;
+}
+
 export async function digestHex(name, bytes) {
   const d = await globalThis.crypto.subtle.digest(name, bytes);
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -273,20 +266,26 @@ export async function digestHex(name, bytes) {
 /**
  * Verify a TimeStampResp. Returns `trusted: true` ONLY when
  *   · the status is granted,
- *   · the TSTInfo's messageImprint matches the digest of the bytes the token
- *     was made over,
- *   · the signerInfo's message-digest attribute matches the digest of the
- *     TSTInfo (CMS signs the attributes, not the content), and
- *   · the CMS signature verifies against the TSA certificate's public key.
+ *   · the messageImprint matches the digest of the bytes the token covers,
+ *   · the signed message-digest attribute matches the TSTInfo, and
+ *   · the CMS signature verifies against the TSA key the CALLER supplied.
  *
- * Every one of those is checked here. A failure at any step returns
- * `trusted: false` with the step named — never a pass with a caveat.
+ * A failure at any of those returns the STEP that blocked — never a pass with a
+ * caveat, and never a bare false. Three fail-open paths were closed here:
+ *
+ *   1. a missing expectedDigestHex used to SKIP the imprint comparison and
+ *      report trust — now it fails closed at step "imprint".
+ *   2. a token with no caller-supplied key used to fall back to the certificate
+ *      EMBEDDED IN THE TOKEN. Anyone can mint a keypair, sign a token and attach
+ *      the matching certificate, so that would have verified "self-consistent",
+ *      not "trusted". The key now comes only from the caller.
+ *      (It also never worked: a certificate is not an SPKI. Safe by accident.)
  */
 export async function verifyTimestampResponse(responseBytes, options = {}) {
   const bytes = responseBytes instanceof Uint8Array ? responseBytes : new Uint8Array(responseBytes);
   const subtle = options.subtle || globalThis.crypto?.subtle;
-  const tsPublicKey = options.tsaPublicKey || null;   // SPKI, when the caller has it
-  const expectedDigestHex = options.expectedDigestHex || null; // digest of the signed bytes
+  const tsPublicKey = options.tsaPublicKey || null;   // SPKI, supplied by the caller
+  const expectedDigestHex = options.expectedDigestHex || null; // digest of the covered bytes
 
   if (!subtle) return { trusted: false, at: null, step: "environment", reason: "no WebCrypto implementation is available" };
 
@@ -310,29 +309,32 @@ export async function verifyTimestampResponse(responseBytes, options = {}) {
   const parsed = parseTstInfo(tokenBytes);
   if (!parsed.ok) return { trusted: false, at: null, step: "tstinfo", reason: parsed.reason };
 
-  /* --- step 3: messageImprint against the signed bytes --- */
-  if (expectedDigestHex) {
+  /* --- step 3: bind the token to the bytes it must cover (fail closed) --- */
+  if (!expectedDigestHex) {
+    return {
+      trusted: false, at: parsed.genTime, step: "imprint",
+      reason: "no digest of the covered bytes was supplied, so the token cannot be bound to anything",
+    };
+  }
+  {
     const algo = DIGEST_NAMES[parsed.digestAlgorithm];
     if (!algo) return { trusted: false, at: parsed.genTime, step: "imprint", reason: "unsupported messageImprint digest " + parsed.digestAlgorithm };
     const imprintHex = [...parsed.hashedMessage].map((b) => b.toString(16).padStart(2, "0")).join("");
     if (imprintHex !== expectedDigestHex.toLowerCase()) {
-      return { trusted: false, at: parsed.genTime, step: "imprint", reason: "the messageImprint does not match the digest of the signed bytes" };
+      return { trusted: false, at: parsed.genTime, step: "imprint", reason: "the messageImprint does not match the digest of the covered bytes" };
     }
   }
 
-  /* --- step 4: CMS signature --- */
+  /* --- step 4: CMS signature over the signed attributes --- */
   const signer = parseSignerInfo(tokenBytes, parsed);
   if (!signer.ok) return { trusted: false, at: parsed.genTime, step: "signerinfo", reason: signer.reason };
 
   const spec = SIGNATURE_ALGORITHMS[signer.signatureAlgorithm];
   if (!spec) return { trusted: false, at: parsed.genTime, step: "algorithm", reason: "unsupported signature algorithm " + signer.signatureAlgorithm };
 
-  /* The signed bytes are the signedAttrs in their explicit SET OF form when
-   * attributes are present, otherwise the TSTInfo itself. */
   let signedBytes;
   if (signer.signedAttrs) {
     const attrs = reencodeAsSet(tokenBytes, signer.signedAttrs);
-    /* The message-digest attribute must match the digest of the TSTInfo. */
     const md = readMessageDigestAttribute(tokenBytes, signer.signedAttrs);
     const tstDigestAlgo = DIGEST_NAMES[signer.digestAlgorithm] || DIGEST_NAMES["2.16.840.1.101.3.4.2.1"];
     if (md) {
@@ -347,24 +349,26 @@ export async function verifyTimestampResponse(responseBytes, options = {}) {
     signedBytes = parsed.tstInfoBytes;
   }
 
-  const keyBytes = tsPublicKey || signer.certificate;
-  if (!keyBytes) {
+  /* --- the key must come from the CALLER, never from the token --- */
+  if (!tsPublicKey) {
     return {
       trusted: false, at: parsed.genTime, step: "tsa-key",
-      reason: "the token carries no TSA certificate and none was supplied, so the CMS signature was not checked",
-      imprintVerified: Boolean(expectedDigestHex),
+      reason: signer.certificate
+        ? "the token carries a certificate, but a certificate inside the token cannot vouch for itself; supply the TSA key you trust (see spkiFromCertificate)"
+        : "no TSA key was supplied, so the CMS signature was not checked",
+      imprintVerified: true,
       tstInfo: { policy: parsed.policy, serial: parsed.serialNumber, genTime: parsed.genTime },
     };
   }
 
   let key;
   try {
-    key = await subtle.importKey("spki", keyBytes, { name: spec.name, namedCurve: spec.name === "ECDSA" ? "P-256" : undefined, hash: spec.hash }, false, ["verify"]);
+    key = await subtle.importKey("spki", tsPublicKey, { name: spec.name, namedCurve: spec.name === "ECDSA" ? "P-256" : undefined, hash: spec.hash }, false, ["verify"]);
   } catch (err) {
     return {
       trusted: false, at: parsed.genTime, step: "tsa-key",
       reason: "the TSA key did not import: " + (err && err.message || String(err)),
-      imprintVerified: Boolean(expectedDigestHex),
+      imprintVerified: true,
     };
   }
 
@@ -379,19 +383,20 @@ export async function verifyTimestampResponse(responseBytes, options = {}) {
     trusted: true,
     at: parsed.genTime,
     step: "verified",
-    reason: "status granted, messageImprint matched, and the CMS signature verified against the TSA key",
+    reason: "status granted, messageImprint matched, and the CMS signature verified against the caller-supplied TSA key",
     policy: parsed.policy,
     serial: parsed.serialNumber,
     digestAlgorithm: parsed.digestAlgorithm,
   };
 }
 
-/** The transport call a caller wires in. It verifies when it can and says
- *  exactly which step blocked when it cannot. */
+/** The transport call a caller wires in. It binds the token to the signature
+ *  bytes by digest and verifies when it can; it names the blocking step when it
+ *  cannot. */
 export function createTsrTransport(options = {}) {
-  const { fetchTsr, tsaPublicKey, subtle } = options;
+  const { tsaPublicKey, subtle } = options;
   return {
-    async verifyTimestamp({ signature, payload, timestampToken }) {
+    async verifyTimestamp({ signature, timestampToken }) {
       if (!timestampToken) {
         return { trusted: false, at: null, step: "none", reason: "no countersignature token was presented" };
       }
