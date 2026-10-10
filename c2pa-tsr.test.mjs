@@ -1,269 +1,27 @@
 /* TRUST:// TSR suite — the second certification step, measured.
  *
- * The transport parsed a timestamp STATUS but never verified the token. This
- * suite exercises c2pa-tsr.js, which does the second step: verify the CMS
- * SignedData signature against the TSA key, after checking that the
- * messageImprint really covers the bytes the token was made over.
+ * WHAT THIS SUITE DOES
+ * --------------------
+ * It drives the SHIPPED c2pa-tsr.js. Until this revision it carried a copy of
+ * the verifier inside itself, which meant it could stay green while the
+ * product drifted — and it did: the two fail-open paths fixed in c2pa-tsr.js
+ * (a token without a digest reported as trusted, an embedded certificate
+ * allowed to vouch for its own token) were present in the copy and invisible
+ * here. The verifier is now imported, not mirrored.
  *
- * THE CHAIN OF EVIDENCE THE TOKEN HAS TO CLOSE
- * --------------------------------------------
- *   1. PKIStatusInfo.status == 0                (granted)
- *   2. messageImprint.hashedMessage == digest(signature bytes)
- *   3. signedAttrs.message-digest == digest(TSTInfo)
- *   4. CMS signature verifies over the signedAttrs in SET OF form
+ * The fixtures stay: they carry the three lessons of the build — DER INTEGER is
+ * signed, GeneralizedTime on the wire has no separators, and signed attributes
+ * are signed in IMPLICIT [0] form but verified in SET OF form.
  *
- * Every one of those is asserted here, and a failure at any step must produce
- * `trusted: false` with the step named. A token is trusted only when all four
- * hold — which is the whole point of a second certification step.
- *
- * Self-contained: DER is built in the fixtures, no imports.
+ * Run: node c2pa-tsr.test.mjs   (Node 20+, global WebCrypto)
  */
 
-const TSR_VERSION = "trust/tsr@0.2";
+import { verifyTimestampResponse, parseTstInfo, parseSignerInfo, readMessageDigestAttribute } from "./c2pa-tsr.js";
 
-const DIGEST_NAMES = {
-  "2.16.840.1.101.3.4.2.1": { webcrypto: "SHA-256" },
-  "2.16.840.1.101.3.4.2.2": { webcrypto: "SHA-384" },
-  "2.16.840.1.101.3.4.2.3": { webcrypto: "SHA-512" },
-};
-const SIGNATURE_ALGORITHMS = {
-  "1.2.840.10045.4.3.2": { name: "ECDSA", hash: "SHA-256" },
-  "1.2.840.10045.4.3.3": { name: "ECDSA", hash: "SHA-384" },
-  "1.2.840.10045.4.3.4": { name: "ECDSA", hash: "SHA-512" },
-};
+const TSR_VERSION = "trust/tsr@0.3";
 
 /* ================================================================== *
- * DER — read side (mirrors c2pa-tsr.js)
- * ================================================================== */
-
-function derTlv(bytes, offset) {
-  if (offset + 2 > bytes.length) return null;
-  let pos = offset;
-  const tag = bytes[pos++];
-  let len = bytes[pos++];
-  if (len & 0x80) {
-    const n = len & 0x7f;
-    if (n === 0 || n > 4) return null;
-    len = 0;
-    for (let i = 0; i < n; i++) len = len * 256 + bytes[pos++];
-  }
-  if (pos + len > bytes.length) return null;
-  return { tag, start: offset, valueStart: pos, valueEnd: pos + len, end: pos + len };
-}
-function derChildren(bytes, parent) {
-  const out = [];
-  let o = parent.valueStart;
-  while (o < parent.valueEnd) {
-    const t = derTlv(bytes, o);
-    if (!t || t.end <= o) break;
-    out.push(t);
-    o = t.end;
-  }
-  return out;
-}
-function derOid(bytes, t) {
-  if (t.tag !== 0x06 || t.valueStart >= t.valueEnd) return null;
-  let pos = t.valueStart;
-  const first = bytes[pos++];
-  const parts = [Math.floor(first / 40), first % 40];
-  let val = 0;
-  while (pos < t.valueEnd) {
-    const b = bytes[pos++];
-    val = val * 128 + (b & 0x7f);
-    if (!(b & 0x80)) { parts.push(val); val = 0; }
-  }
-  return parts.join(".");
-}
-function derBytes(bytes, t) { return bytes.slice(t.valueStart, t.valueEnd); }
-function derInteger(bytes, t) { let v = 0; for (let i = t.valueStart; i < t.valueEnd; i++) v = v * 256 + bytes[i]; return v; }
-/** GeneralizedTime on the wire is YYYYMMDDHHMMSSZ — fifteen characters, no
- *  separators. Reading it as if it carried dashes and colons shifts every
- *  slice, which is why this reads the DER form and formats afterwards. */
-function derTime(bytes, t) {
-  const text = new TextDecoder().decode(bytes.slice(t.valueStart, t.valueEnd));
-  if (t.tag === 0x18 && text.length >= 14) {
-    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}T${text.slice(8, 10)}:${text.slice(10, 12)}:${text.slice(12, 14)}Z`;
-  }
-  if (t.tag === 0x17 && text.length >= 12) {
-    const yy = parseInt(text.slice(0, 2), 10);
-    const year = yy >= 50 ? 1900 + yy : 2000 + yy;
-    return `${year}-${text.slice(2, 4)}-${text.slice(4, 6)}T${text.slice(6, 8)}:${text.slice(8, 10)}:${text.slice(10, 12)}Z`;
-  }
-  return null;
-}
-/** The signed attributes are signed in their IMPLICIT [0] form but verified in
- *  their explicit SET OF form. The tag byte is the only difference, and getting
- *  it wrong is why so many CMS checks fail on a perfectly valid token. */
-function reencodeAsSet(bytes, t) {
-  const body = bytes.slice(t.start + 1, t.end);
-  const out = new Uint8Array(1 + body.length);
-  out[0] = 0x31;
-  out.set(body, 1);
-  return out;
-}
-function parseTstInfo(bytes) {
-  const root = derTlv(bytes, 0);
-  if (!root || root.tag !== 0x30) return { ok: false, reason: "the token is not a DER SEQUENCE" };
-  const ci = derChildren(bytes, root);
-  const contentType = ci[0] ? derOid(bytes, ci[0]) : null;
-  const wrapper = ci.find((c) => c.tag === 0xa0);
-  if (!wrapper) return { ok: false, reason: "ContentInfo carries no content" };
-  const signedData = derTlv(bytes, wrapper.valueStart);
-  if (!signedData || signedData.tag !== 0x30) return { ok: false, reason: "SignedData is not a SEQUENCE" };
-  const sd = derChildren(bytes, signedData);
-  const encap = sd.find((c) => c.tag === 0x30 && derChildren(bytes, c).length === 2 && derChildren(bytes, c)[0].tag === 0x06);
-  if (!encap) return { ok: false, reason: "SignedData has no encapContentInfo" };
-  const eContentWrapper = derChildren(bytes, encap).find((c) => c.tag === 0xa0);
-  if (!eContentWrapper) return { ok: false, reason: "encapContentInfo carries no eContent" };
-  const eContentOctets = derTlv(bytes, eContentWrapper.valueStart);
-  if (!eContentOctets || eContentOctets.tag !== 0x04) return { ok: false, reason: "eContent is not an OCTET STRING" };
-  const tstInfoBytes = derBytes(bytes, eContentOctets);
-  const tst = derTlv(tstInfoBytes, 0);
-  if (!tst || tst.tag !== 0x30) return { ok: false, reason: "TSTInfo is not a SEQUENCE" };
-  const fields = derChildren(tstInfoBytes, tst);
-  const policy = fields[1] ? derOid(tstInfoBytes, fields[1]) : null;
-  /* The messageImprint is SEQUENCE { AlgorithmIdentifier, OCTET STRING }. The
-   * AlgorithmIdentifier is itself a SEQUENCE, so the two elements are children
-   * of the imprint, not of the TSTInfo. Reading them from the wrong level is
-   * what made every token look like an imprint mismatch. */
-  const imprintSeq = fields[2] && fields[2].tag === 0x30 ? derChildren(tstInfoBytes, fields[2]) : [];
-  const digestAlgorithm = imprintSeq.length && imprintSeq[0].tag === 0x30
-    ? derOid(tstInfoBytes, derChildren(tstInfoBytes, imprintSeq[0])[0] || imprintSeq[0])
-    : null;
-  const hashedMessage = imprintSeq.length >= 2 && imprintSeq[1].tag === 0x04
-    ? derBytes(tstInfoBytes, imprintSeq[1])
-    : null;
-  const serialNumber = fields[3] && fields[3].tag === 0x02 ? derInteger(tstInfoBytes, fields[3]) : null;
-  const genTime = fields[4] ? derTime(tstInfoBytes, fields[4]) : null;
-  if (!hashedMessage) return { ok: false, reason: "TSTInfo carries no messageImprint" };
-  return { ok: true, contentType, policy, digestAlgorithm, hashedMessage, serialNumber, genTime, tstInfoBytes, sd };
-}
-function parseSignerInfo(bytes, parsed) {
-  const sd = parsed.sd;
-  let certificate = null;
-  const certWrapper = sd.find((c) => c.tag === 0xa0);
-  if (certWrapper) {
-    const first = derTlv(bytes, certWrapper.valueStart);
-    if (first && first.tag === 0x30) certificate = bytes.slice(first.start, first.end);
-  }
-  const signerInfos = sd[sd.length - 1];
-  if (!signerInfos || signerInfos.tag !== 0x31) return { ok: false, reason: "SignedData has no signerInfos" };
-  const signerInfo = derTlv(bytes, signerInfos.valueStart);
-  if (!signerInfo) return { ok: false, reason: "signerInfos is empty" };
-  const si = derChildren(bytes, signerInfo);
-  const digestAlgorithm = si.find((c) => c.tag === 0x30 && derOid(bytes, derChildren(bytes, c)[0] || c));
-  const signedAttrs = si.find((c) => c.tag === 0xa0);
-  const sigAlgSeq = si.filter((c) => c.tag === 0x30).pop();
-  const signature = si.filter((c) => c.tag === 0x04).pop();
-  if (!signature) return { ok: false, reason: "signerInfo carries no signature" };
-  return {
-    ok: true, certificate, signedAttrs,
-    signatureAlgorithm: sigAlgSeq ? derOid(bytes, derChildren(bytes, sigAlgSeq)[0] || sigAlgSeq) : null,
-    digestAlgorithm: digestAlgorithm ? derOid(bytes, derChildren(bytes, digestAlgorithm)[0] || digestAlgorithm) : null,
-    signature: derBytes(bytes, signature),
-  };
-}
-function readMessageDigestAttribute(bytes, signedAttrs) {
-  if (!signedAttrs) return null;
-  for (const attr of derChildren(bytes, signedAttrs)) {
-    const parts = derChildren(bytes, attr);
-    if (!parts[0]) continue;
-    if (derOid(bytes, parts[0]) !== "1.2.840.113549.1.9.4") continue;
-    const values = parts.find((p) => p.tag === 0x31);
-    if (!values) continue;
-    const octets = derTlv(bytes, values.valueStart);
-    if (octets && octets.tag === 0x04) return derBytes(bytes, octets);
-  }
-  return null;
-}
-async function digestHex(name, bytes) {
-  const d = await globalThis.crypto.subtle.digest(name, bytes);
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/* The verifier, mirrored from c2pa-tsr.js. */
-async function verifyTimestampResponse(responseBytes, options = {}) {
-  const bytes = responseBytes instanceof Uint8Array ? responseBytes : new Uint8Array(responseBytes);
-  const subtle = options.subtle || globalThis.crypto?.subtle;
-  const tsPublicKey = options.tsaPublicKey || null;
-  const expectedDigestHex = options.expectedDigestHex || null;
-
-  if (!subtle) return { trusted: false, at: null, step: "environment", reason: "no WebCrypto implementation is available" };
-
-  const root = derTlv(bytes, 0);
-  if (!root || root.tag !== 0x30) return { trusted: false, at: null, step: "parse", reason: "the response is not a DER SEQUENCE" };
-  const kids = derChildren(bytes, root);
-  const statusInfo = kids[0];
-  let status = null;
-  if (statusInfo) {
-    const s = derChildren(bytes, statusInfo).find((p) => p.tag === 0x02);
-    if (s) status = derInteger(bytes, s);
-  }
-  if (status !== 0) return { trusted: false, at: null, step: "status", reason: "the authority did not return granted status" };
-
-  const token = kids[1];
-  if (!token) return { trusted: false, at: null, step: "token", reason: "a granted response carried no timeStampToken" };
-  const tokenBytes = bytes.slice(token.start, token.end);
-
-  const parsed = parseTstInfo(tokenBytes);
-  if (!parsed.ok) return { trusted: false, at: null, step: "tstinfo", reason: parsed.reason };
-
-  if (expectedDigestHex) {
-    const algo = DIGEST_NAMES[parsed.digestAlgorithm];
-    if (!algo) return { trusted: false, at: parsed.genTime, step: "imprint", reason: "unsupported messageImprint digest " + parsed.digestAlgorithm };
-    const imprintHex = [...parsed.hashedMessage].map((b) => b.toString(16).padStart(2, "0")).join("");
-    if (imprintHex !== expectedDigestHex.toLowerCase()) {
-      return { trusted: false, at: parsed.genTime, step: "imprint", reason: "the messageImprint does not match the digest of the signed bytes" };
-    }
-  }
-
-  const signer = parseSignerInfo(tokenBytes, parsed);
-  if (!signer.ok) return { trusted: false, at: parsed.genTime, step: "signerinfo", reason: signer.reason };
-
-  const spec = SIGNATURE_ALGORITHMS[signer.signatureAlgorithm];
-  if (!spec) return { trusted: false, at: parsed.genTime, step: "algorithm", reason: "unsupported signature algorithm " + signer.signatureAlgorithm };
-
-  let signedBytes;
-  if (signer.signedAttrs) {
-    const attrs = reencodeAsSet(tokenBytes, signer.signedAttrs);
-    const md = readMessageDigestAttribute(tokenBytes, signer.signedAttrs);
-    const tstAlgo = DIGEST_NAMES[signer.digestAlgorithm] || DIGEST_NAMES["2.16.840.1.101.3.4.2.1"];
-    if (md) {
-      const expect = await digestHex(tstAlgo.webcrypto, parsed.tstInfoBytes);
-      const got = [...md].map((b) => b.toString(16).padStart(2, "0")).join("");
-      if (expect !== got) {
-        return { trusted: false, at: parsed.genTime, step: "contentdigest", reason: "the signed message-digest attribute does not match the TSTInfo" };
-      }
-    }
-    signedBytes = attrs;
-  } else {
-    signedBytes = parsed.tstInfoBytes;
-  }
-
-  const keyBytes = tsPublicKey || signer.certificate;
-  if (!keyBytes) {
-    return { trusted: false, at: parsed.genTime, step: "tsa-key", reason: "the token carries no TSA certificate and none was supplied, so the CMS signature was not checked" };
-  }
-
-  let key;
-  try {
-    key = await subtle.importKey("spki", keyBytes, { name: spec.name, namedCurve: spec.name === "ECDSA" ? "P-256" : undefined, hash: spec.hash }, false, ["verify"]);
-  } catch (err) {
-    return { trusted: false, at: parsed.genTime, step: "tsa-key", reason: "the TSA key did not import: " + (err && err.message || String(err)) };
-  }
-
-  try {
-    const ok = await subtle.verify({ name: spec.name, hash: spec.hash }, key, signer.signature, signedBytes);
-    if (!ok) return { trusted: false, at: parsed.genTime, step: "cms-signature", reason: "the CMS signature does not hold over the signed attributes" };
-  } catch (err) {
-    return { trusted: false, at: parsed.genTime, step: "cms-signature", reason: "CMS verification failed: " + (err && err.message || String(err)) };
-  }
-
-  return { trusted: true, at: parsed.genTime, step: "verified", reason: "status granted, messageImprint matched, and the CMS signature verified against the TSA key", policy: parsed.policy, serial: parsed.serialNumber };
-}
-
-/* ================================================================== *
- * DER writers, to build real tokens
+ * DER writers, for the fixtures only
  * ================================================================== */
 
 function len(n) {
@@ -296,9 +54,7 @@ const int = (n) => {
   return tlv(0x02, new Uint8Array(bytes));
 };
 const octstr = (b) => tlv(0x04, b instanceof Uint8Array ? b : new Uint8Array(b));
-const bool = (v) => tlv(0x01, new Uint8Array([v ? 0xff : 0x00]));
 const ctx0 = (b) => tlv(0xa0, b);
-const ctx1 = (b) => tlv(0x81, b);
 const oid = (s) => {
   const parts = s.split(".").map(Number);
   const out = [Math.floor(parts[0]) * 40 + parts[1]];
@@ -312,18 +68,25 @@ const oid = (s) => {
   return tlv(0x06, new Uint8Array(out));
 };
 /** GeneralizedTime on the wire is the DER form: 20261008120000Z. The display
- *  form with dashes and colons is what a human reads, not what the token says —
- *  writing the display form into the fixture made every genTime unparseable. */
+ *  form with dashes and colons is what a human reads, not what the token says. */
 const generalized = (s) => {
   const digits = String(s).replace(/[-:TZ]/g, "").slice(0, 14);
   return tlv(0x18, new TextEncoder().encode(digits + "Z"));
 };
+const bitstr = (b) => tlv(0x03, cat([new Uint8Array([0x00]), b]));
+const utc = (s) => tlv(0x17, new TextEncoder().encode(s));
+const nameOf = (cn) => seq(set(seq(oid("2.5.4.3"), tlv(0x0c, new TextEncoder().encode(cn)))));
+/** A structurally real certificate wrapping a real SPKI, so the embedded-
+ *  certificate case can be exercised: it must never vouch for its own token. */
+const makeCert = (spkiDer) => seq(
+  seq(ctx0(int(2)), int(1), seq(oid("1.2.840.10045.4.3.2")), nameOf("Test TSA"),
+      seq(utc("260101000000Z"), utc("270101000000Z")), nameOf("Test TSA"), spkiDer),
+  seq(oid("1.2.840.10045.4.3.2")), bitstr(new Uint8Array([0])));
 
 /** Build a TimeStampResp carrying a real CMS SignedData over signedAttrs. */
-async function buildTimestampResp({ messageImprint, genTime, signerKey, tsaSpki, policy = "1.2.3.4.1", serial = 7, status = 0, breakContentDigest = false, breakImprint = false }) {
+async function buildTimestampResp({ messageImprint, genTime, signerKey, policy = "1.2.3.4.1", serial = 7, status = 0, breakContentDigest = false, breakImprint = false, certDer = null }) {
   const subtle = globalThis.crypto.subtle;
 
-  /* TSTInfo */
   const imprintToUse = breakImprint ? new Uint8Array(32).fill(0xee) : messageImprint;
   const tstInfo = seq(
     int(1),
@@ -333,8 +96,6 @@ async function buildTimestampResp({ messageImprint, genTime, signerKey, tsaSpki,
     generalized(genTime),
   );
 
-  /* signerInfo without attributes would sign the TSTInfo directly; we use the
-   * attribute form, because that is what real tokens do. */
   const tstDigest = new Uint8Array(await subtle.digest("SHA-256", tstInfo));
   const mdToUse = breakContentDigest ? new Uint8Array(32).fill(0xdd) : tstDigest;
 
@@ -356,7 +117,7 @@ async function buildTimestampResp({ messageImprint, genTime, signerKey, tsaSpki,
   );
 
   const encap = seq(oid("1.2.840.113549.1.7.1"), ctx0(octstr(tstInfo)));
-  const certSet = set();
+  const certSet = certDer ? ctx0(certDer) : set();
   const signedData = seq(
     int(3),
     set(seq(oid("2.16.840.1.101.3.4.2.1"))),
@@ -368,7 +129,29 @@ async function buildTimestampResp({ messageImprint, genTime, signerKey, tsaSpki,
   const token = seq(oid("1.2.840.113549.1.7.2"), ctx0(signedData));
   const statusInfo = seq(int(status));
 
-  return { resp: seq(statusInfo, token), tstInfo, signature, tsaSpki };
+  return { resp: seq(statusInfo, token), tstInfo, signature };
+}
+
+function reencodeAsSet(bytes, t) { const body = bytes.slice(t.start + 1, t.end); const out = new Uint8Array(1 + body.length); out[0] = 0x31; out.set(body, 1); return out; }
+function derTlv(bytes, offset) {
+  if (offset + 2 > bytes.length) return null;
+  let pos = offset;
+  const tag = bytes[pos++];
+  let n = bytes[pos++];
+  if (n & 0x80) { const k = n & 0x7f; if (k === 0 || k > 4) return null; n = 0; for (let i = 0; i < k; i++) n = n * 256 + bytes[pos++]; }
+  if (pos + n > bytes.length) return null;
+  return { tag, start: offset, valueStart: pos, valueEnd: pos + n, end: pos + n };
+}
+function derChildren(bytes, parent) {
+  const out = [];
+  let o = parent.valueStart;
+  while (o < parent.valueEnd) {
+    const t = derTlv(bytes, o);
+    if (!t || t.end <= o) break;
+    out.push(t);
+    o = t.end;
+  }
+  return out;
 }
 
 /* ================================================================== *
@@ -392,10 +175,14 @@ const otherSpki = new Uint8Array(await subtle.exportKey("spki", otherPair.public
 const signedBytes = new TextEncoder().encode("cose-signature-bytes");
 const imprint = new Uint8Array(await subtle.digest("SHA-256", signedBytes));
 const imprintHex = [...imprint].map((b) => b.toString(16).padStart(2, "0")).join("");
+const make = (extra = {}) => buildTimestampResp({
+  messageImprint: imprint, genTime: "2026-10-08T12:00:00Z",
+  signerKey: keyPair.privateKey, ...extra,
+});
 
 /* 1. a token that closes every link */
 {
-  const built = await buildTimestampResp({ messageImprint: imprint, genTime: "2026-10-08T12:00:00Z", signerKey: keyPair.privateKey, tsaSpki: spki });
+  const built = await make();
   const r = await verifyTimestampResponse(built.resp, { tsaPublicKey: spki, expectedDigestHex: imprintHex });
   check("a complete token is trusted", r.trusted, true);
   check("the step is named as verified", r.step, "verified");
@@ -406,7 +193,7 @@ const imprintHex = [...imprint].map((b) => b.toString(16).padStart(2, "0")).join
 
 /* 2. the imprint is the link to the signature bytes */
 {
-  const built = await buildTimestampResp({ messageImprint: imprint, genTime: "2026-10-08T12:00:00Z", signerKey: keyPair.privateKey, tsaSpki: spki });
+  const built = await make();
   const wrong = await verifyTimestampResponse(built.resp, { tsaPublicKey: spki, expectedDigestHex: "00".repeat(32) });
   check("a foreign imprint is refused", wrong.trusted, false);
   check("and the step is the imprint", wrong.step, "imprint");
@@ -414,7 +201,7 @@ const imprintHex = [...imprint].map((b) => b.toString(16).padStart(2, "0")).join
 
 /* 3. the token's own claim must match its content */
 {
-  const built = await buildTimestampResp({ messageImprint: imprint, genTime: "2026-10-08T12:00:00Z", signerKey: keyPair.privateKey, tsaSpki: spki, breakImprint: true });
+  const built = await make({ breakImprint: true });
   const r = await verifyTimestampResponse(built.resp, { tsaPublicKey: spki, expectedDigestHex: imprintHex });
   check("a token whose imprint does not cover the bytes is refused", r.trusted, false);
   check("and the step is the imprint", r.step, "imprint");
@@ -422,7 +209,7 @@ const imprintHex = [...imprint].map((b) => b.toString(16).padStart(2, "0")).join
 
 /* 4. the message-digest attribute must match the TSTInfo */
 {
-  const built = await buildTimestampResp({ messageImprint: imprint, genTime: "2026-10-08T12:00:00Z", signerKey: keyPair.privateKey, tsaSpki: spki, breakContentDigest: true });
+  const built = await make({ breakContentDigest: true });
   const r = await verifyTimestampResponse(built.resp, { tsaPublicKey: spki, expectedDigestHex: imprintHex });
   check("a mismatched content digest is refused", r.trusted, false);
   check("and the step is the content digest", r.step, "contentdigest");
@@ -430,7 +217,7 @@ const imprintHex = [...imprint].map((b) => b.toString(16).padStart(2, "0")).join
 
 /* 5. the CMS signature is the last word */
 {
-  const built = await buildTimestampResp({ messageImprint: imprint, genTime: "2026-10-08T12:00:00Z", signerKey: keyPair.privateKey, tsaSpki: spki });
+  const built = await make();
   const r = await verifyTimestampResponse(built.resp, { tsaPublicKey: otherSpki, expectedDigestHex: imprintHex });
   check("a token signed by another key is refused", r.trusted, false);
   check("and the step is the CMS signature", r.step, "cms-signature");
@@ -438,7 +225,7 @@ const imprintHex = [...imprint].map((b) => b.toString(16).padStart(2, "0")).join
 
 /* 6. status comes first */
 {
-  const built = await buildTimestampResp({ messageImprint: imprint, genTime: "2026-10-08T12:00:00Z", signerKey: keyPair.privateKey, tsaSpki: spki, status: 2 });
+  const built = await make({ status: 2 });
   const r = await verifyTimestampResponse(built.resp, { tsaPublicKey: spki, expectedDigestHex: imprintHex });
   check("a non-granted status is refused before anything else", r.trusted, false);
   check("and the step is the status", r.step, "status");
@@ -446,11 +233,10 @@ const imprintHex = [...imprint].map((b) => b.toString(16).padStart(2, "0")).join
 
 /* 7. no TSA key means no verification, and it says so */
 {
-  const built = await buildTimestampResp({ messageImprint: imprint, genTime: "2026-10-08T12:00:00Z", signerKey: keyPair.privateKey, tsaSpki: spki });
+  const built = await make();
   const r = await verifyTimestampResponse(built.resp, { expectedDigestHex: imprintHex });
   check("without a TSA key nothing is trusted", r.trusted, false);
   check("and the step names the missing key", r.step, "tsa-key");
-  check("while still reporting the imprint was checked", r.imprintVerified === undefined || true, true);
 }
 
 /* 8. structural failures fail closed */
@@ -464,7 +250,7 @@ const imprintHex = [...imprint].map((b) => b.toString(16).padStart(2, "0")).join
 
 /* 9. the parser reads a real TSTInfo */
 {
-  const built = await buildTimestampResp({ messageImprint: imprint, genTime: "2026-10-08T12:00:00Z", signerKey: keyPair.privateKey, tsaSpki: spki, policy: "1.3.6.1.4.1.13762.3", serial: 4242 });
+  const built = await make({ policy: "1.3.6.1.4.1.13762.3", serial: 4242 });
   const token = derChildren(built.resp, derTlv(built.resp, 0))[1];
   const parsed = parseTstInfo(built.resp.slice(token.start, token.end));
   check("the TSTInfo parses", parsed.ok, true);
@@ -477,7 +263,7 @@ const imprintHex = [...imprint].map((b) => b.toString(16).padStart(2, "0")).join
 
 /* 10. the SET OF re-encoding is the thing that usually breaks */
 {
-  const built = await buildTimestampResp({ messageImprint: imprint, genTime: "2026-10-08T12:00:00Z", signerKey: keyPair.privateKey, tsaSpki: spki });
+  const built = await make();
   const token = derChildren(built.resp, derTlv(built.resp, 0))[1];
   const tokenBytes = built.resp.slice(token.start, token.end);
   const parsed = parseTstInfo(tokenBytes);
@@ -491,9 +277,23 @@ const imprintHex = [...imprint].map((b) => b.toString(16).padStart(2, "0")).join
   check("and it is the digest of the TSTInfo", [...attrDigest].map((b) => b.toString(16).padStart(2, "0")).join(""), [...new Uint8Array(await subtle.digest("SHA-256", parsed.tstInfoBytes))].map((b) => b.toString(16).padStart(2, "0")).join(""));
 }
 
+/* 11. the two fail-open paths the integration suite found — held together here */
+{
+  const built = await make();
+  const noDigest = await verifyTimestampResponse(built.resp, { tsaPublicKey: spki });
+  check("a token without a digest to bind to is refused", noDigest.trusted, false);
+  check("at the imprint", noDigest.step, "imprint");
+
+  const cert = makeCert(spki);
+  const carried = await make({ certDer: cert });
+  const embedded = await verifyTimestampResponse(carried.resp, { expectedDigestHex: imprintHex });
+  check("an embedded certificate never vouches for its own token", embedded.trusted, false);
+  check("and the step names the missing trusted key", embedded.step, "tsa-key");
+}
+
 /* ---------------- invariants ---------------- */
 
-const builtForInv = await buildTimestampResp({ messageImprint: imprint, genTime: "2026-10-08T12:00:00Z", signerKey: keyPair.privateKey, tsaSpki: spki });
+const builtForInv = await make();
 
 const inv = {
   "a token without a verified CMS signature is never trusted": (await verifyTimestampResponse(builtForInv.resp, { expectedDigestHex: imprintHex })).trusted === false,
@@ -501,32 +301,34 @@ const inv = {
   "a foreign imprint is never accepted": (await verifyTimestampResponse(builtForInv.resp, { tsaPublicKey: spki, expectedDigestHex: "00".repeat(32) })).trusted === false,
   "a token signed by another key is never accepted": (await verifyTimestampResponse(builtForInv.resp, { tsaPublicKey: otherSpki, expectedDigestHex: imprintHex })).trusted === false,
   "every refusal names the step that blocked": (await verifyTimestampResponse(seq(seq(int(2))), { tsaPublicKey: spki })).step === "status",
+  "a token is never trusted without a digest to bind it to": (await verifyTimestampResponse(builtForInv.resp, { tsaPublicKey: spki })).trusted === false,
+  "an embedded certificate never vouches for its own token": (await verifyTimestampResponse((await make({ certDer: makeCert(spki) })).resp, { expectedDigestHex: imprintHex })).trusted === false,
 };
 
 function pad(s, n) { s = String(s); while (s.length < n) s += " "; return s; }
 const lines = [];
 lines.push("");
 lines.push("TRUST:// TSR suite - " + TSR_VERSION);
+lines.push("  drives the shipped c2pa-tsr.js (imported, not mirrored)");
 lines.push("");
-lines.push("  " + pad("assertion", 60) + pad("got", 14) + "ok");
-lines.push("  " + "-".repeat(80));
-for (const r of rows) lines.push("  " + pad(r.label, 60) + pad(r.got, 14) + (r.ok ? "pass" : "FAIL want " + r.want));
+lines.push("  " + pad("assertion", 62) + pad("got", 16) + "ok");
+lines.push("  " + "-".repeat(84));
+for (const r of rows) lines.push("  " + pad(r.label, 62) + pad(r.got, 16) + (r.ok ? "pass" : "FAIL want " + r.want));
 lines.push("");
 lines.push("passed " + pass + "/" + rows.length);
 lines.push("");
-for (const name of Object.keys(inv)) lines.push("inv  " + pad(name, 58) + (inv[name] ? "holds" : "VIOLATED"));
+for (const name of Object.keys(inv)) lines.push("inv  " + pad(name, 60) + (inv[name] ? "holds" : "VIOLATED"));
 lines.push("");
 lines.push("A token is trusted only when the status is granted, the imprint covers");
 lines.push("the signed bytes, the content digest matches the TSTInfo, AND the CMS");
-lines.push("signature verifies against the TSA key. Anything less names its step.");
+lines.push("signature verifies against a key the CALLER supplied. Anything less");
+lines.push("names the step that blocked.");
 lines.push("");
 
 console.log(lines.join("\n"));
 
-return {
-  tsr_version: TSR_VERSION,
-  passed: pass,
-  total: rows.length,
-  invariants: inv,
-  allGreen: pass === rows.length && Object.keys(inv).every((k) => inv[k]),
-};
+/* Exit code, not a top-level return: a `return` outside a function is a
+ * SyntaxError under node, which is why this file could not be started at all
+ * before this revision. */
+const allGreen = pass === rows.length && Object.keys(inv).every((k) => inv[k]);
+process.exitCode = allGreen ? 0 : 1;
