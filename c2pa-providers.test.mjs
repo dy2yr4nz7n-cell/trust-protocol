@@ -1,10 +1,14 @@
 /* TRUST:// C2PA providers suite — the network layers, and the boundary.
  *
- * 37/37 assertions, 5/5 invariants.
+ * WHAT CHANGED IN THIS REVISION
+ * -----------------------------
+ * This suite used to carry a COPY of c2pa-providers.js inside itself and test
+ * that. A mirror proves the logic, not the file that ships — and it can stay
+ * green while the product drifts. The providers are now IMPORTED from
+ * ./c2pa-providers.js, and the suite ends with process.exitCode instead of a
+ * top-level `return` (which is a SyntaxError under node).
  *
- * The providers are exercised against transports that answer by table, so the
- * whole six-layer chain runs without a network. What this proves is the SHAPE of
- * the network half:
+ * WHAT THIS PROVES — the SHAPE of the network half:
  *
  *   · the Sig_structure is built correctly (the thing people get wrong)
  *   · a real ES256 signature verifies through WebCrypto
@@ -14,138 +18,18 @@
  *   · a required revocation check with no source is a failure, not a pass
  *   · an untrusted countersignature is never trusted
  *
- * Self-contained: WebCrypto only, no imports.
+ * WebCrypto only. Run: node c2pa-providers.test.mjs   (Node 20+)
  */
 
-const PROVIDER_VERSION = "trust/c2pa-providers@0.2";
+import {
+  buildSigStructure,
+  createCryptoProvider,
+  createChainProvider,
+  createTimestampProvider,
+  createNullTransport,
+} from "./c2pa-providers.js";
 
-const ALGORITHMS = {
-  "-7": { name: "ECDSA", namedCurve: "P-256", hash: "SHA-256", cose: "ES256" },
-  "-35": { name: "ECDSA", namedCurve: "P-384", hash: "SHA-384", cose: "ES384" },
-  "-36": { name: "ECDSA", namedCurve: "P-521", hash: "SHA-512", cose: "ES512" },
-  "-257": { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256", cose: "RS256" },
-  "-258": { name: "RSASSA-PKCS1-v1_5", hash: "SHA-384", cose: "RS384" },
-  "-259": { name: "RSASSA-PKCS1-v1_5", hash: "SHA-512", cose: "RS512" },
-};
-
-/* ---------------- Sig_structure ---------------- */
-
-function encodeCborArray(parts) {
-  const head = new Uint8Array([0x80 | parts.length]);
-  let total = head.length;
-  for (const p of parts) total += p.length;
-  const out = new Uint8Array(total);
-  out.set(head, 0);
-  let o = head.length;
-  for (const p of parts) { out.set(p, o); o += p.length; }
-  return out;
-}
-function encodeCborBytes(bytes) {
-  const n = bytes.length;
-  let head;
-  if (n < 24) head = new Uint8Array([0x40 | n]);
-  else if (n < 256) head = new Uint8Array([0x58, n]);
-  else if (n < 65536) head = new Uint8Array([0x59, (n >> 8) & 0xff, n & 0xff]);
-  else head = new Uint8Array([0x5a, (n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]);
-  const out = new Uint8Array(head.length + n);
-  out.set(head, 0);
-  out.set(bytes, head.length);
-  return out;
-}
-function encodeCborText(str) {
-  const bytes = new TextEncoder().encode(str);
-  const out = encodeCborBytes(bytes);
-  out[0] = 0x60 | bytes.length;
-  return out;
-}
-function buildSigStructure(protectedBytes, payloadBytes, externalAad) {
-  const aad = externalAad instanceof Uint8Array ? externalAad : new Uint8Array(0);
-  return encodeCborArray([
-    encodeCborText("Signature1"),
-    encodeCborBytes(protectedBytes instanceof Uint8Array ? protectedBytes : new Uint8Array(0)),
-    encodeCborBytes(aad),
-    encodeCborBytes(payloadBytes instanceof Uint8Array ? payloadBytes : new Uint8Array(0)),
-  ]);
-}
-
-/* ---------------- providers ---------------- */
-
-function createCryptoProvider(options = {}) {
-  const subtle = options.subtle || globalThis.crypto?.subtle;
-  return async function cryptoProvider({ protectedBytes, payload, signature, alg, certificates }) {
-    if (!subtle) return { ok: false, reason: "no WebCrypto implementation is available" };
-    if (!signature || signature.length === 0) return { ok: false, reason: "the COSE structure carries no signature" };
-    if (!certificates || certificates.length === 0) return { ok: false, reason: "no certificate is available to verify against" };
-    const spec = ALGORITHMS[String(alg)];
-    if (!spec) return { ok: false, reason: "unsupported COSE algorithm " + String(alg) };
-
-    let key;
-    try {
-      key = await subtle.importKey("spki", certificates[0], { name: spec.name, namedCurve: spec.namedCurve, hash: spec.hash }, false, ["verify"]);
-    } catch (err) {
-      return { ok: false, reason: "the leaf certificate did not yield an importable public key: " + (err && err.message || String(err)) };
-    }
-    const sigStructure = buildSigStructure(protectedBytes, payload, new Uint8Array(0));
-    try {
-      const ok = await subtle.verify({ name: spec.name, hash: spec.hash }, key, signature, sigStructure);
-      return { ok, reason: ok ? "signature verified over the Sig_structure" : "signature does not hold over the Sig_structure" };
-    } catch (err) {
-      return { ok: false, reason: "signature verification failed: " + (err && err.message || String(err)) };
-    }
-  };
-}
-
-function createChainProvider(options = {}) {
-  const transport = options.transport;
-  const requireRevocationCheck = options.requireRevocationCheck === true;
-  return async function chainProvider({ certificates }) {
-    if (typeof (transport && transport.buildPath) !== "function") {
-      return { ok: false, reason: "no transport: the X.509 path was not built" };
-    }
-    let path;
-    try { path = await transport.buildPath(certificates); }
-    catch (err) { return { ok: false, reason: "path building threw: " + (err && err.message || String(err)) }; }
-    if (!path || !path.ok) return { ok: false, reason: (path && path.reason) || "no path to a trust anchor could be built" };
-
-    let revoked = false;
-    if (typeof transport.revocationStatus === "function") {
-      try {
-        const r = await transport.revocationStatus(certificates);
-        revoked = Boolean(r && r.revoked);
-        if (revoked) return { ok: false, anchor: path.anchor || null, expired: Boolean(path.expired), reason: "a certificate in the path is revoked" };
-      } catch (err) {
-        if (requireRevocationCheck) return { ok: false, anchor: path.anchor || null, expired: Boolean(path.expired), reason: "revocation could not be determined: " + (err && err.message || String(err)) };
-      }
-    } else if (requireRevocationCheck) {
-      return { ok: false, anchor: path.anchor || null, expired: Boolean(path.expired), reason: "policy requires a revocation check and no revocation source is configured" };
-    }
-    return { ok: true, anchor: path.anchor || null, expired: Boolean(path.expired), reason: path.reason || "chain built to a trust anchor" };
-  };
-}
-
-function createTimestampProvider(options = {}) {
-  const transport = options.transport;
-  return async function timestampProvider({ signature, payload }) {
-    if (typeof (transport && transport.verifyTimestamp) !== "function") {
-      return { trusted: false, at: null, reason: "no transport: no timestamp authority was consulted" };
-    }
-    try {
-      const r = await transport.verifyTimestamp({ signature, payload });
-      if (!r) return { trusted: false, at: null, reason: "the timestamp authority returned nothing" };
-      return { trusted: Boolean(r.trusted), at: r.at || null, reason: r.reason || (r.trusted ? "countersignature verified" : "countersignature could not be verified") };
-    } catch (err) {
-      return { trusted: false, at: null, reason: "timestamp verification threw: " + (err && err.message || String(err)) };
-    }
-  };
-}
-
-function createNullTransport() {
-  return {
-    async buildPath() { return { ok: false, reason: "no path builder is configured" }; },
-    async revocationStatus() { return { revoked: false, reason: "no revocation source is configured" }; },
-    async verifyTimestamp() { return { trusted: false, at: null, reason: "no timestamp authority is configured" }; },
-  };
-}
+const PROVIDER_VERSION = "trust/c2pa-providers@0.3";
 
 /* ---------------- assertions ---------------- */
 
@@ -170,6 +54,7 @@ const sigStructure = buildSigStructure(protectedBytes, payload, new Uint8Array(0
 const goodSig = new Uint8Array(await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keyPair.privateKey, sigStructure));
 const crypto = createCryptoProvider({});
 
+/* 1 — the Sig_structure, which is what COSE actually signs */
 {
   const s = buildSigStructure(protectedBytes, payload, new Uint8Array(0));
   check("Sig_structure starts with array(4)", s[0], 0x84);
@@ -180,12 +65,14 @@ const crypto = createCryptoProvider({});
   check("an external_aad is included", aad.length > s.length, true);
 }
 
+/* 2 — a real signature verifies */
 {
   const r = await crypto({ protectedBytes, payload, signature: goodSig, alg: -7, certificates: [spki] });
   check("a valid ES256 signature verifies", r.ok, true);
   check("the reason names the Sig_structure", r.reason.indexOf("Sig_structure") >= 0, true);
 }
 
+/* 3 — tampering fails */
 {
   const other = new TextEncoder().encode("different-pixels");
   const r = await crypto({ protectedBytes, payload: other, signature: goodSig, alg: -7, certificates: [spki] });
@@ -203,6 +90,7 @@ const crypto = createCryptoProvider({});
   check("the wrong public key fails", r.ok, false);
 }
 
+/* 4 — absent inputs fail closed */
 {
   const noSig = await crypto({ protectedBytes, payload, signature: new Uint8Array(0), alg: -7, certificates: [spki] });
   check("an empty signature fails", noSig.ok, false);
@@ -215,6 +103,7 @@ const crypto = createCryptoProvider({});
   check("and it says why", notSpki.reason.length > 0, true);
 }
 
+/* 5 — the chain provider */
 {
   const good = createChainProvider({ transport: {
     async buildPath() { return { ok: true, anchor: "Example Root CA", expired: false }; },
@@ -259,6 +148,7 @@ const crypto = createCryptoProvider({});
   check("and it says policy required it", r7.reason.indexOf("revocation") >= 0, true);
 }
 
+/* 6 — the timestamp provider */
 {
   const trusted = createTimestampProvider({ transport: { async verifyTimestamp() { return { trusted: true, at: "2026-10-08T12:00:00Z" }; } } });
   const t1 = await trusted({ signature: goodSig, payload });
@@ -280,6 +170,7 @@ const crypto = createCryptoProvider({});
   check("and it carries the error", t4.reason.indexOf("tsa unreachable") >= 0, true);
 }
 
+/* 7 — the null transport, which must never invent an answer */
 {
   const nullT = createNullTransport();
   const n1 = await nullT.buildPath([]);
@@ -290,6 +181,8 @@ const crypto = createCryptoProvider({});
   check("the null transport trusts no timestamp", n3.trusted, false);
 }
 
+/* ---------------- invariants ---------------- */
+
 const inv = {
   "no provider passes without a transport that answered": (await createChainProvider({})({ certificates: [] })).ok === false,
   "a throwing transport never passes": (await createChainProvider({ transport: { async buildPath() { throw new Error("x"); } } })({ certificates: [] })).ok === false,
@@ -298,18 +191,21 @@ const inv = {
   "an untrusted timestamp is never trusted": (await createTimestampProvider({})({ signature: new Uint8Array(0), payload: new Uint8Array(0) })).trusted === false,
 };
 
+/* ---------------- report ---------------- */
+
 function pad(s, n) { s = String(s); while (s.length < n) s += " "; return s; }
 const lines = [];
 lines.push("");
 lines.push("TRUST:// C2PA providers suite - " + PROVIDER_VERSION);
+lines.push("  drives the shipped c2pa-providers.js (imported, not mirrored)");
 lines.push("");
-lines.push("  " + pad("assertion", 58) + pad("got", 10) + "ok");
-lines.push("  " + "-".repeat(74));
-for (const r of rows) lines.push("  " + pad(r.label, 58) + pad(r.got, 10) + (r.ok ? "pass" : "FAIL want " + r.want));
+lines.push("  " + pad("assertion", 60) + pad("got", 12) + "ok");
+lines.push("  " + "-".repeat(78));
+for (const r of rows) lines.push("  " + pad(r.label, 60) + pad(r.got, 12) + (r.ok ? "pass" : "FAIL want " + r.want));
 lines.push("");
 lines.push("passed " + pass + "/" + rows.length);
 lines.push("");
-for (const name of Object.keys(inv)) lines.push("inv  " + pad(name, 56) + (inv[name] ? "holds" : "VIOLATED"));
+for (const name of Object.keys(inv)) lines.push("inv  " + pad(name, 58) + (inv[name] ? "holds" : "VIOLATED"));
 lines.push("");
 lines.push("The network layers are providers: absent or throwing means unknown,");
 lines.push("never verified. The Sig_structure is what COSE actually signs.");
@@ -317,12 +213,6 @@ lines.push("");
 
 console.log(lines.join("\n"));
 
-const results = {
-  provider_version: PROVIDER_VERSION,
-  passed: pass,
-  total: rows.length,
-  invariants: inv,
-  allGreen: pass === rows.length && Object.keys(inv).every((k) => inv[k]),
-};
-if (typeof globalThis.__report === "function") globalThis.__report(results);
-return results;
+/* Exit code, not a top-level return: a `return` outside a function is a
+ * SyntaxError under node, which is why this file could not be started. */
+process.exitCode = pass === rows.length && Object.keys(inv).every((k) => inv[k]) ? 0 : 1;
