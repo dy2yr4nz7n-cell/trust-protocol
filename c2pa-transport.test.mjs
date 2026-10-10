@@ -1,26 +1,30 @@
-/* TRUST:// transport suite — DER parsing, chain building, CRL lookup.
+/* TRUST:// transport suite — DER parsing, chain building, signature
+ * verification, CRL lookup.
  *
- * WHAT CHANGED IN THIS REVISION
- * -----------------------------
- * This suite used to carry a COPY of c2pa-transport.js and hold it at @0.2. A
- * mirror proves the logic, not the file that ships — and this one had drifted:
- * the product moved to @0.3 with a `step` on every timestamp answer, the copy
- * did not, and the suite stayed green. The transport is now IMPORTED from
- * ./c2pa-transport.js, both states of its timestamp path are asserted (without
- * and with an injected verifier), and the file ends with process.exitCode
- * instead of a top-level `return` (a SyntaxError under node).
+ * WHAT CHANGED IN THIS REVISION (Phase 05)
+ * ----------------------------------------
+ * The fixtures in this suite used to be structurally hollow: `certificate()`
+ * wrote `bitstr(new Uint8Array([0x00, 0x01]))` as the signature — two arbitrary
+ * bytes with no key pair behind them. That was enough while buildChain() only
+ * ordered the chain by name and never checked a signature, which is exactly the
+ * gap STATUS.md recorded as "no certificate signature verification".
  *
- * Assertions from the earlier mirror that this rewrite does not carry over are
- * listed in STATUS.md; the count here is not comparable with the old 37.
+ * Now that buildChain() PROVES the order, the fixtures must be real. Every
+ * certificate here is minted with WebCrypto and signed by its issuer's private
+ * key, so a chain that orders also verifies — and a chain that does not verify
+ * is refused, which the suite asserts directly.
+ *
+ * The certificate COUNT and the assertion count both change; the old 37 is not
+ * comparable with this revision.
  *
  * Run: node c2pa-transport.test.mjs   (Node 20+)
  */
 
 import { parseCertificate, buildChain, checkCrl, createTransport } from "./c2pa-transport.js";
 
-const TRANSPORT_VERSION = "trust/transport@0.3";
+const subtle = globalThis.crypto.subtle;
 
-/* ---------------- DER writers, for the fixtures only ---------------- */
+/* ---------------- DER writers ---------------- */
 
 function len(n) {
   if (n < 0x80) return new Uint8Array([n]);
@@ -60,62 +64,113 @@ const oid = (str) => {
 const utc = (s) => tlv(0x17, new TextEncoder().encode(s));
 const name = (cn) => seq(set(seq(oid("2.5.4.3"), tlv(0x0c, new TextEncoder().encode(cn)))));
 
-function certificate({ serial, issuerCn, subjectCn, notBefore, notAfter, ski, aki, isCa }) {
+/* P-256, because that is the curve the COSE profile uses. */
+const EC_ALG = () => seq(oid("1.2.840.10045.2.1"), oid("1.2.840.10045.3.1.1"));
+const ECDSA_SHA256 = () => seq(oid("1.2.840.10045.4.3.2"));
+
+/** Convert a WebCrypto IEEE P1363 signature into the DER SEQUENCE X.509 uses. */
+function ecdsaDer(raw) {
+  const half = raw.length / 2;
+  const part = (bytes) => {
+    let i = 0;
+    while (i < bytes.length - 1 && bytes[i] === 0) i++;
+    let v = bytes.slice(i);
+    if (v[0] & 0x80) v = cat([new Uint8Array([0]), v]);
+    return tlv(0x02, v);
+  };
+  return seq(part(raw.slice(0, half)), part(raw.slice(half)));
+}
+
+/**
+ * Mint a real certificate. `issuerKeyPair` signs it; without one it is
+ * self-signed. Returns the DER and the key pair, so a chain can be built.
+ */
+async function mintCertificate({ serial, issuerCn, subjectCn, notBefore, notAfter, ski, aki, isCa, keyPair, issuerKeyPair }) {
+  const kp = keyPair || (await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]));
+  const signer = issuerKeyPair || kp;
+  const spki = new Uint8Array(await subtle.exportKey("spki", kp.publicKey));
+
   const extensions = [];
   if (ski) extensions.push(seq(oid("2.5.29.14"), octstr(tlv(0x04, ski))));
   if (aki) extensions.push(seq(oid("2.5.29.35"), octstr(seq(tlv(0x80, aki)))));
   if (isCa !== undefined) extensions.push(seq(oid("2.5.29.19"), octstr(seq(bool(isCa)))));
   const extWrapper = extensions.length ? tlv(0xa3, seq(...extensions)) : new Uint8Array(0);
+
   const tbs = seq(
     tlv(0xa0, int(2)),
     tlv(0x02, new Uint8Array([serial & 0xff])),
-    seq(oid("1.2.840.10045.4.3.2")),
+    ECDSA_SHA256(),
     name(issuerCn),
     seq(utc(notBefore), utc(notAfter)),
     name(subjectCn),
-    seq(oid("1.2.840.10045.2.1"), oid("1.2.840.10045.3.1.7")),
-    bitstr(new Uint8Array([0x04, 0x01, 0x02, 0x03])),
+    spki,
     extWrapper,
   );
-  return seq(tbs, seq(oid("1.2.840.10045.4.3.2")), bitstr(new Uint8Array([0x00, 0x01])));
+
+  const raw = new Uint8Array(await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signer.privateKey, tbs));
+  return { der: seq(tbs, ECDSA_SHA256(), bitstr(ecdsaDer(raw))), keyPair: kp, tbs };
 }
 
 /* ---------------- fixtures ---------------- */
 
+/* Everything from the fixtures onward lives in an async main(), because the
+ * certificates must be minted before any assertion can run. */
+async function main() {
+
 const now = "2026-10-08T12:00:00Z";
 
-const leaf = certificate({
-  serial: 0x11, issuerCn: "Example Intermediate", subjectCn: "did:web:example.org",
-  notBefore: "250101000000Z", notAfter: "270101000000Z",
-  ski: new Uint8Array([1, 1, 1, 1]), aki: new Uint8Array([2, 2, 2, 2]), isCa: false,
-});
-const intermediate = certificate({
+const rootKp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+const interKp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+const strangerKp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+
+const root = (await mintCertificate({
+  serial: 0x33, issuerCn: "Example Root CA", subjectCn: "Example Root CA",
+  notBefore: "200001000000Z", notAfter: "350101000000Z",
+  ski: new Uint8Array([3, 3, 3, 3]), isCa: true, keyPair: rootKp,
+})).der;
+
+const intermediate = (await mintCertificate({
   serial: 0x22, issuerCn: "Example Root CA", subjectCn: "Example Intermediate",
   notBefore: "250101000000Z", notAfter: "280101000000Z",
   ski: new Uint8Array([2, 2, 2, 2]), aki: new Uint8Array([3, 3, 3, 3]), isCa: true,
-});
-const root = certificate({
-  serial: 0x33, issuerCn: "Example Root CA", subjectCn: "Example Root CA",
-  notBefore: "200001000000Z", notAfter: "350101000000Z",
-  ski: new Uint8Array([3, 3, 3, 3]), isCa: true,
-});
-const strangerRoot = certificate({
+  keyPair: interKp, issuerKeyPair: rootKp,
+})).der;
+
+const leaf = (await mintCertificate({
+  serial: 0x11, issuerCn: "Example Intermediate", subjectCn: "did:web:example.org",
+  notBefore: "250101000000Z", notAfter: "270101000000Z",
+  ski: new Uint8Array([1, 1, 1, 1]), aki: new Uint8Array([2, 2, 2, 2]), isCa: false,
+  issuerKeyPair: interKp,
+})).der;
+
+const strangerRoot = (await mintCertificate({
   serial: 0x44, issuerCn: "Rogue Root", subjectCn: "Rogue Root",
   notBefore: "200001000000Z", notAfter: "350101000000Z",
-  ski: new Uint8Array([4, 4, 4, 4]), isCa: true,
-});
-const expiredLeaf = certificate({
+  ski: new Uint8Array([4, 4, 4, 4]), isCa: true, keyPair: strangerKp,
+})).der;
+
+const expiredLeaf = (await mintCertificate({
   serial: 0x55, issuerCn: "Example Intermediate", subjectCn: "old.example.org",
   notBefore: "200101000000Z", notAfter: "210101000000Z",
   ski: new Uint8Array([5, 5, 5, 5]), aki: new Uint8Array([2, 2, 2, 2]), isCa: false,
-});
+  issuerKeyPair: interKp,
+})).der;
+
+/* The impostor: same names as the honest intermediate, different key. A chain
+ * built on it orders perfectly and must still be refused. */
+const impostorKp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+const impostorIntermediate = (await mintCertificate({
+  serial: 0x22, issuerCn: "Example Root CA", subjectCn: "Example Intermediate",
+  notBefore: "250101000000Z", notAfter: "280101000000Z",
+  isCa: true, keyPair: impostorKp, issuerKeyPair: rootKp,
+})).der;
 
 function crl(serials) {
   const entries = serials.map((s) => seq(tlv(0x02, new Uint8Array([s])), utc("260101000000Z")));
   const revokedList = entries.length ? seq(...entries) : new Uint8Array(0);
   return seq(
-    seq(int(0), seq(oid("1.2.840.10045.4.3.2")), name("Example Intermediate"), utc("260101000000Z"), utc("270101000000Z"), revokedList),
-    seq(oid("1.2.840.10045.4.3.2")),
+    seq(int(0), ECDSA_SHA256(), name("Example Intermediate"), utc("260101000000Z"), utc("270101000000Z"), revokedList),
+    ECDSA_SHA256(),
     bitstr(new Uint8Array([0x00, 0x01])),
   );
 }
@@ -142,26 +197,38 @@ const check = (label, got, want) => {
   check("a root reports it is a CA", parseCertificate(root).isCa, true);
   check("SKI and AKI are read", [p.ski !== null, p.aki !== null], [true, true]);
   check("garbage is refused", parseCertificate(new Uint8Array([1, 2, 3])).ok, false);
+  /* New in this revision: the material verification needs. */
+  check("the TBS TLV is retained for verification", p.tbsBytes[0], 0x30);
+  check("the signature is retained", p.signature.length > 0, true);
+  check("the signature algorithm is read", p.signatureAlgorithm, "1.2.840.10045.4.3.2");
+  check("the full SPKI is retained", p.spki[0], 0x30);
 }
 
-/* 2 — chain building */
+/* 2 — chain building, now proven by signature */
 {
-  const c1 = buildChain([leaf, intermediate, root], ["Example Root CA"], now);
+  const c1 = await buildChain([leaf, intermediate, root], ["Example Root CA"], now);
   check("a chain is ordered to its root", c1.ok, true);
   check("the anchor is named", c1.anchor, "Example Root CA");
   check("the chain is not expired", c1.expired, false);
-  check("order of presentation does not matter", buildChain([root, leaf, intermediate], ["Example Root CA"], now).ok, true);
+  check("the chain length is reported", c1.chainLength, 3);
+  check("order of presentation does not matter", (await buildChain([root, leaf, intermediate], ["Example Root CA"], now)).ok, true);
 
-  const off = buildChain([leaf, intermediate, strangerRoot], ["Example Root CA"], now);
+  const off = await buildChain([leaf, intermediate, strangerRoot], ["Example Root CA"], now);
   check("a root off the list is refused", off.ok, false);
   check("and the reason names the list", off.reason.indexOf("trust list") >= 0, true);
 
-  const noList = buildChain([leaf, intermediate, root], [], now);
+  const noList = await buildChain([leaf, intermediate, root], [], now);
   check("no trust list means no anchor claim", [noList.ok, noList.anchor], [true, null]);
 
-  const exp = buildChain([expiredLeaf, intermediate, root], ["Example Root CA"], now);
-  check("an expired chain still orders", exp.ok, true);
+  const exp = await buildChain([expiredLeaf, intermediate, root], ["Example Root CA"], now);
+  check("an expired chain still verifies", exp.ok, true);
   check("and is flagged as expired", exp.expired, true);
+
+  /* THE FIX. Same names as the honest intermediate, a different key: the order
+   * is found, and the signature check is what refuses it. */
+  const forged = await buildChain([leaf, impostorIntermediate, root], ["Example Root CA"], now);
+  check("an impostor with matching names is refused", forged.ok, false);
+  check("and the reason names the signature", forged.reason.indexOf("does not verify against its issuer") >= 0, true);
 }
 
 /* 3 — CRL, by value */
@@ -172,8 +239,7 @@ const check = (label, got, want) => {
   check("a CRL that does not parse says so", checkCrl(new Uint8Array([1, 2, 3]), "11").reason.indexOf("did not parse") >= 0, true);
 }
 
-/* 4 — the http path. The transport only fetches for an issuer it has a URL for,
- *     so the fixture maps the leaf's issuer to a URL. */
+/* 4 — the http path */
 {
   const issuer = parseCertificate(leaf).issuer;
   const crlUrls = { [issuer]: "http://crl.example/ca.crl" };
@@ -195,7 +261,18 @@ const check = (label, got, want) => {
   check("and the failure is named", r4.reason.indexOf("network down") >= 0, true);
 }
 
-/* 5 — timestamps WITHOUT an injected verifier: the honest no, step named */
+/* 5 — the transport's buildPath is the proven path */
+{
+  const t = createTransport({ trustAnchors: ["Example Root CA"], referenceTime: now });
+  const path = await t.buildPath([leaf, intermediate, root]);
+  check("buildPath proves the chain", path.ok, true);
+  check("and names the anchor", path.anchor, "Example Root CA");
+
+  const bad = await createTransport({ trustAnchors: ["Example Root CA"], referenceTime: now }).buildPath([leaf, impostorIntermediate, root]);
+  check("buildPath refuses an impostor chain", bad.ok, false);
+}
+
+/* 6 — timestamps WITHOUT an injected verifier: the honest no, step named */
 {
   const t = createTransport({});
   const none = await t.verifyTimestamp({ signature: new Uint8Array([1]) });
@@ -212,7 +289,7 @@ const check = (label, got, want) => {
   check("and the step names the status", r.step, "status");
 }
 
-/* 6 — timestamps WITH an injected verifier: handed the right things, no re-judging */
+/* 7 — timestamps WITH an injected verifier */
 {
   let received = null;
   const t = createTransport({
@@ -238,8 +315,9 @@ const check = (label, got, want) => {
 
 const t = createTransport({});
 const inv = {
-  "a root off the trust list is never accepted": buildChain([leaf, intermediate, strangerRoot], ["Example Root CA"], now).ok === false,
-  "an expired chain is flagged, not silently passed": buildChain([expiredLeaf, intermediate, root], ["Example Root CA"], now).expired === true,
+  "a root off the trust list is never accepted": (await buildChain([leaf, intermediate, strangerRoot], ["Example Root CA"], now)).ok === false,
+  "a chain that orders but does not verify is refused": (await buildChain([leaf, impostorIntermediate, root], ["Example Root CA"], now)).ok === false,
+  "an expired chain is flagged, not silently passed": (await buildChain([expiredLeaf, intermediate, root], ["Example Root CA"], now)).expired === true,
   "a CRL match is by value, not by position": checkCrl(crlWithLeaf, "0011").revoked === true && checkCrl(crlWithoutLeaf, "11").revoked === false,
   "no http function means no revocation was checked": (await createTransport({}).revocationStatus([leaf])).checked === 0,
   "a timestamp is never trusted without verifying the TSA signature": (await t.verifyTimestamp({ signature: new Uint8Array([1]), timestampToken: seq(seq(int(0))) })).trusted === false,
@@ -249,13 +327,18 @@ const inv = {
 /* ---------------- report ---------------- */
 
 function pad(s, n) { s = String(s); while (s.length < n) s += " "; return s; }
-const lines = ["", "TRUST:// C2PA transport suite - " + TRANSPORT_VERSION, "  drives the shipped c2pa-transport.js (imported, not mirrored)", ""];
-lines.push("  " + pad("assertion", 62) + pad("got", 14) + "ok", "  " + "-".repeat(84));
-for (const r of rows) lines.push("  " + pad(r.label, 62) + pad(r.got, 14) + (r.ok ? "pass" : "FAIL want " + r.want));
+const lines = ["", "TRUST:// C2PA transport suite - trust/transport@0.4", "  drives the shipped c2pa-transport.js (imported, not mirrored)", "  fixtures are real: every certificate is signed by its issuer", ""];
+lines.push("  " + pad("assertion", 66) + pad("got", 16) + "ok", "  " + "-".repeat(90));
+for (const r of rows) lines.push("  " + pad(r.label, 66) + pad(r.got, 16) + (r.ok ? "pass" : "FAIL want " + r.want));
 lines.push("", "passed " + pass + "/" + rows.length, "");
-for (const k of Object.keys(inv)) lines.push("inv  " + pad(k, 60) + (inv[k] ? "holds" : "VIOLATED"));
+for (const k of Object.keys(inv)) lines.push("inv  " + pad(k, 64) + (inv[k] ? "holds" : "VIOLATED"));
 lines.push("");
 console.log(lines.join("\n"));
 
-/* Exit code, not a top-level return — see the header. */
-process.exitCode = pass === rows.length && Object.keys(inv).every((k) => inv[k]) ? 0 : 1;
+process.exitCode = pass === rows.length && Object.values(inv).every(Boolean) ? 0 : 1;
+}
+
+main().catch((err) => {
+  console.error("suite threw: " + (err && err.message ? err.message : String(err)));
+  process.exitCode = 1;
+});

@@ -7,60 +7,36 @@
  *   revocationStatus(certificates)   CRL lookup
  *   verifyTimestamp({signature})     RFC 3161 countersignature status
  *
- * WHY IT TAKES AN `http` FUNCTION
- * -------------------------------
- * This module performs no I/O of its own. It takes an `http(request)` function
- * that returns `{ status, headers, body }`. That keeps the network surface in
- * one place a caller can see, log, rate-limit or stub — and it is why the whole
- * file is testable without a socket.
+ * WHAT CHANGED IN THIS REVISION (Phase 05)
+ * ----------------------------------------
+ * buildChain() now VERIFIES THE CERTIFICATE SIGNATURES. Until now it ordered a
+ * chain and matched an anchor by name, and never checked that any certificate
+ * was actually signed by the one above it. A chain of unrelated certificates
+ * that happened to carry matching issuer/subject bytes would have been accepted
+ * — that was listed here as NOT IMPLEMENTED, and it is implemented now.
  *
- * WHAT IS IMPLEMENTED HERE, AND WHAT IS NOT
- * -----------------------------------------
- * IMPLEMENTED:
- *   · DER parsing of a certificate: issuer, subject, serial, validity, SKI, AKI, basicConstraints
- *   · chain ORDERING leaf -> intermediates -> root by issuer/subject
- *   · anchor MATCHING against a configured trust list
- *   · expiry evaluation against a reference time
- *   · CRL fetch, DER parse, and revocation lookup BY VALUE
- *   · RFC 3161 status parsing
- *   · the TSA signature itself, by delegation to c2pa-tsr.js (the second
- *     certification step) — see verifyTimestamp below
+ * Matching is still by NAME for the ORDERING step (there is nothing else to go
+ * on for an unordered bag of certificates), but the ORDER is then proven: each
+ * certificate's signature must verify against the next certificate's key, and
+ * the terminal certificate must be self-signed. The trust-list match stays the
+ * caller's decision, as before.
  *
- * NOT IMPLEMENTED, stated so nobody has to discover it:
- *   · signature verification of the certificates themselves
+ * DER parsing of a certificate: issuer, subject, serial, validity, SKI, AKI,
+ * basicConstraints, plus the TBS bytes, the signature and the signature
+ * algorithm that verification needs.
+ *
+ * STILL NOT IMPLEMENTED, stated so nobody has to discover it:
  *   · name constraints, policy constraints, path length constraints
  *   · CRL signature verification
  *
  * A transport that cannot do a step reports that step as failed. It never
  * reports success for work it did not do.
- *
- * THE TWO CERTIFICATION STEPS, KEPT APART
- * ---------------------------------------
- * A timestamp has two separable parts, and collapsing them is how a system
- * starts claiming more than it knows:
- *
- *   1. STATUS     the authority answered "granted"           — parsed here
- *   2. TSA PROOF  the token's CMS signature verifies against
- *                 the TSA key, over attributes that cover
- *                 the TSTInfo, whose imprint covers the
- *                 signature bytes we were given            — c2pa-tsr.js
- *
- * Step 1 alone is a claim by someone else. Step 2 is evidence. This transport
- * reports `trusted: true` only when step 2 actually ran, and otherwise names the
- * step that did not happen.
- *
- * THE DER DETAIL THAT MATTERS
- * ---------------------------
- * An X.509 certificate writes its version as an EXPLICIT [0] wrapper around the
- * version integer (0xa0 0x03 0x02 0x01 0x02). A bare INTEGER in that position
- * shifts every following field by one, and a parser then reads the signature
- * algorithm as the serial number. The positional walk below advances only for a
- * field that is PRESENT, so an absent optional field cannot shift the rest.
  */
 
 import { verifyTimestampResponse } from "./c2pa-tsr.js";
+import { verifyCertificateSignature } from "./x509-parser.js";
 
-export const TRANSPORT_VERSION = "trust/transport@0.3";
+export const TRANSPORT_VERSION = "trust/transport@0.4";
 
 /* ================================================================== *
  * DER — just enough ASN.1 to read a certificate and a CRL
@@ -145,11 +121,23 @@ export function parseCertificate(der) {
   let idx = 0, serial = null;
   if (fields[idx] && fields[idx].tag === 0xa0) idx++;
   if (fields[idx] && fields[idx].tag === 0x02) { serial = derHex(bytes, fields[idx]); idx++; }
-  if (fields[idx] && fields[idx].tag === 0x30) idx++;
+  let tbsSignatureAlgorithm = null;
+  if (fields[idx] && fields[idx].tag === 0x30) { tbsSignatureAlgorithm = derOid(bytes, derChildren(bytes, fields[idx])[0]); idx++; }
   const issuer = fields[idx] && fields[idx].tag === 0x30 ? derHex(bytes, fields[idx]) : null; idx++;
   const validity = fields[idx] && fields[idx].tag === 0x30 ? derChildren(bytes, fields[idx]) : []; idx++;
   const subject = fields[idx] && fields[idx].tag === 0x30 ? derHex(bytes, fields[idx]) : null;
   if (!issuer || !subject) return { ok: false, reason: "certificate has no issuer or subject" };
+
+  /* SubjectPublicKeyInfo: the full TLV, because WebCrypto's importKey("spki")
+   * needs tag+length+value, not just the BIT STRING body. */
+  const spkiTlv = fields[idx] && fields[idx].tag === 0x30 ? fields[idx] : null;
+  const spki = spkiTlv ? bytes.slice(spkiTlv.start, spkiTlv.end) : null;
+
+  /* The certificate's own signature: second child SEQUENCE gives the outer
+   * algorithm, third child is the BIT STRING holding the signature value. */
+  const outerAlg = kids[1] && kids[1].tag === 0x30 ? derOid(bytes, derChildren(bytes, kids[1])[0]) : null;
+  const sigBitString = kids[2] && kids[2].tag === 0x03 ? kids[2] : null;
+  const signature = sigBitString ? bytes.slice(sigBitString.valueStart + 1, sigBitString.valueEnd) : null;
 
   /* Extensions: SKI (2.5.29.14), AKI (2.5.29.35), basicConstraints (2.5.29.19).
    * SKI is an OCTET STRING wrapping a KEY IDENTIFIER, which is itself tag 0x04. */
@@ -186,6 +174,13 @@ export function parseCertificate(der) {
     notBefore: validity[0] ? derTime(bytes, validity[0]) : null,
     notAfter: validity[1] ? derTime(bytes, validity[1]) : null,
     ski, aki, isCa,
+    /* Verification material. tbsBytes is the exact TLV, header included — a
+     * signature covers tag+length+value, so the value alone will not do. */
+    tbsBytes: bytes.slice(tbs.start, tbs.end),
+    signature,
+    signatureAlgorithm: tbsSignatureAlgorithm,
+    certificateSignatureAlgorithm: outerAlg,
+    spki,
   };
 }
 
@@ -193,7 +188,21 @@ export function parseCertificate(der) {
  * Chain building
  * ================================================================== */
 
-export function buildChain(certificates, trustAnchors, referenceTime) {
+/**
+ * Orders a certificate chain and proves it.
+ *
+ * The ORDER is found by issuer/subject name — an unordered bag gives nothing
+ * else to walk by. The order is then VERIFIED cryptographically: each
+ * certificate's signature must hold against the next certificate's public key,
+ * and the terminal certificate must be self-signed. A chain whose names match
+ * but whose signatures do not is refused.
+ *
+ * @param {Uint8Array[]} certificates
+ * @param {Array<string|{name: string}>} trustAnchors anchor names to match
+ * @param {string} referenceTime ISO string for expiry evaluation
+ * @returns {Promise<object>} { ok, anchor, expired, reason, chainLength? }
+ */
+export async function buildChain(certificates, trustAnchors, referenceTime) {
   const parsed = [];
   for (const c of certificates) {
     const p = parseCertificate(c);
@@ -222,8 +231,34 @@ export function buildChain(certificates, trustAnchors, referenceTime) {
 
   if (notYetValid) return { ok: false, reason: "a certificate in the chain is not yet valid" };
 
+  /* THE NEW STEP: prove the order. Each certificate must be signed by the one
+   * above it. This runs before any anchor decision, because a chain that is not
+   * cryptographically a chain is not a chain — the trust list only says whether
+   * we already trusted the root, not whether the links hold. */
+  for (let i = 0; i < ordered.length - 1; i++) {
+    const signer = ordered[i];
+    const issuer = ordered[i + 1];
+    if (!signer.signature || !signer.signatureAlgorithm || !issuer.spki) {
+      return {
+        ok: false,
+        reason: "certificate " + i + " carries no verifiable signature or its issuer carries no public key",
+      };
+    }
+    const res = await verifyCertificateSignature(signer.tbsBytes, signer.signature, issuer.spki, signer.signatureAlgorithm);
+    if (!res.ok) {
+      return { ok: false, reason: "certificate " + i + " does not verify against its issuer: " + res.reason };
+    }
+  }
+
+  /* The terminal certificate must sign itself for the chain to be rooted. */
+  const rootRes = await verifyCertificateSignature(root.tbsBytes, root.signature, root.spki, root.signatureAlgorithm);
+  if (!rootRes.ok) {
+    return { ok: false, reason: "the terminal certificate is not self-signed: " + rootRes.reason };
+  }
+
   if (trustAnchors && trustAnchors.length > 0) {
-    /* An anchor is matched by the name it carries, against the root's subject. */
+    /* An anchor is matched by the name it carries, against the root's subject.
+     * The signatures above are what make that name worth matching. */
     const matched = trustAnchors.find((a) => {
       const name = typeof a === "string" ? a : (a && a.name) || "";
       if (!name) return false;
@@ -231,10 +266,22 @@ export function buildChain(certificates, trustAnchors, referenceTime) {
       return (root.subject || "").indexOf(ascii) >= 0;
     });
     if (!matched) return { ok: false, reason: "the root is not on this verifier's trust list" };
-    return { ok: true, anchor: typeof matched === "string" ? matched : matched.name, expired, reason: "chain ordered to a configured trust anchor" };
+    return {
+      ok: true,
+      anchor: typeof matched === "string" ? matched : matched.name,
+      expired,
+      chainLength: ordered.length,
+      reason: "every certificate signature verified and the chain ordered to a configured trust anchor",
+    };
   }
 
-  return { ok: true, anchor: null, expired, reason: "chain ordered; no trust list was configured" };
+  return {
+    ok: true,
+    anchor: null,
+    expired,
+    chainLength: ordered.length,
+    reason: "every certificate signature verified; no trust list was configured",
+  };
 }
 
 /* ================================================================== *
