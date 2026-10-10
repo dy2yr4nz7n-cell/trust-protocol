@@ -213,7 +213,9 @@ die aktuellen Bytes zurück zur signierten Quelle:
 | `demo-verifier.js` | Demo-Verifier und die vier Policies |
 | `record-0.2.schema.json` | JSON Schema (2020-12). `verdict` fehlt darin absichtlich |
 | `vectors.js` | Testvektoren |
-| `conformance.mjs` · `derivation.test.mjs` · `signature.test.mjs` · `fingerprint.test.mjs` · `c2pa-transport.test.mjs` · `c2pa-tsr.test.mjs` | Die sechs Suiten |
+| `conformance.mjs` · `derivation.test.mjs` · `signature.test.mjs` · `fingerprint.test.mjs` | Die vier in sich geschlossenen Suiten |
+| `c2pa-transport.test.mjs` · `c2pa-providers.test.mjs` · `c2pa-tsr.test.mjs` | Die drei c2pa-Suiten — sie **importieren** die ausgelieferten Module |
+| `c2pa-integration.test.mjs` | Integrationstest gegen die ausgelieferten Module |
 | `index.html` | Bedienbare Demo mit Policy-Umschaltung und Fingerabdruck-Panel |
 | `sw.js` · `manifest.webmanifest` · `.nojekyll` | Offline-Shell, installierbar, GitHub Pages |
 | `sprechnotizen.md` | Sprechnotizen zum 15-Folien-Deck |
@@ -222,15 +224,19 @@ die aktuellen Bytes zurück zur signierten Quelle:
 
 ## Ausführen
 
-Alle Suiten sind in sich geschlossen — sie brauchen nichts außer WebCrypto:
+Die vier ersten Suiten sind in sich geschlossen — sie brauchen nichts außer
+WebCrypto. Die drei c2pa-Suiten und der Integrationstest **importieren** die
+ausgelieferten Module und müssen im selben Verzeichnis laufen:
 
 ```bash
 node conformance.mjs
 node derivation.test.mjs
 node signature.test.mjs
 node fingerprint.test.mjs
-node c2pa-transport.test.mjs
 node c2pa-tsr.test.mjs
+node c2pa-providers.test.mjs
+node c2pa-transport.test.mjs
+node c2pa-integration.test.mjs
 ```
 
 **Demo** — über HTTP ausliefern, ES-Module laden nicht von `file://`:
@@ -249,10 +255,16 @@ conformance.mjs          passed 14/14
 derivation.test.mjs      passed 16/16
 signature.test.mjs       passed 18/18
 fingerprint.test.mjs     passed 20/20
-c2pa-transport.test.mjs  passed 37/37
-c2pa-tsr.test.mjs        passed 33/33
+c2pa-integration.test.mjs  passed 25/25   (ausgelieferte Module)
+c2pa-tsr.test.mjs        importiert c2pa-tsr.js         Lauf offen
+c2pa-providers.test.mjs  importiert c2pa-providers.js   Lauf offen
+c2pa-transport.test.mjs  importiert c2pa-transport.js   Lauf offen
 
-Das sind 138 Testfälle in sechs Suiten, zwanzig Invarianten.
+Gemessen: 93 Assertions in vier Suiten plus 25 im Integrationstest,
+zwanzig Invarianten. Die drei importierenden Suiten sind umgebaut, aber seit
+dem Umbau nicht gelaufen; ihre alten Zahlen gelten für den eingebetteten
+Nachbau und stehen deshalb nicht mehr hier. Eine gerundete Gesamtzahl gibt es
+nicht.
 
 inv  verdict is never persisted                          holds
 inv  unsigned claim never forges provenance              holds
@@ -286,7 +298,9 @@ inv  every refusal names the step that blocked           holds
 - **CRL-Signaturprüfung.** Die Kettenordnung und die Wertsuche laufen; die
   Signatur über die CRL selbst nicht.
 - **Zwei interoperable Implementierungen.** Ein Standard mit einer Umsetzung ist
-  eine Beschreibung. Stufe 7 braucht eine zweite.
+  eine Beschreibung. Stufe 7 braucht eine zweite. Ein Kandidat mit eigener
+  Testdatei (`trust-c2pa-hashbinding-fix`) ist aufgetaucht, aber noch nicht
+  gegen dieses Repository gestellt — ein Kandidat ist kein Nachweis.
 - **Derivation über Record-Grenzen.** Heute löst ein Verifier gegen seinen
   eigenen Store auf.
 - **API (Stufe 5) und Browser-Integration (Stufe 4)** — Roadmap, nicht Code.
