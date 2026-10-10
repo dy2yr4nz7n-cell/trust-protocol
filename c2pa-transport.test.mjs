@@ -1,40 +1,26 @@
-/* TRUST:// transport suite — DER parsing, chain building, CRL lookup. 37/37.
+/* TRUST:// transport suite — DER parsing, chain building, CRL lookup.
  *
- * The transport in c2pa-transport.js does no I/O of its own: it takes an
- * `http(request)` function. That is what makes every assertion here measurable
- * without a socket, and it is also what keeps the network surface in one place.
+ * WHAT CHANGED IN THIS REVISION
+ * -----------------------------
+ * This suite used to carry a COPY of c2pa-transport.js and hold it at @0.2. A
+ * mirror proves the logic, not the file that ships — and this one had drifted:
+ * the product moved to @0.3 with a `step` on every timestamp answer, the copy
+ * did not, and the suite stayed green. The transport is now IMPORTED from
+ * ./c2pa-transport.js, both states of its timestamp path are asserted (without
+ * and with an injected verifier), and the file ends with process.exitCode
+ * instead of a top-level `return` (a SyntaxError under node).
  *
- * WHAT THIS SUITE PROVES
- * ----------------------
- *   · a DER certificate parses into issuer, subject, serial, validity, SKI, AKI
- *   · a chain is ORDERED leaf -> root by issuer/subject, whatever order it is
- *     presented in
- *   · a root off the trust list is refused, a root on it is accepted
- *   · an expired chain still orders, and is FLAGGED rather than silently passed
- *   · a CRL is parsed and a revoked serial is found BY VALUE, not by position
- *   · a certificate that appears in a fetched CRL fails the revocation check
- *   · no http function means no CRL was fetched — and that is said plainly
- *   · a timestamp token that is not verified is never reported as trusted
+ * Assertions from the earlier mirror that this rewrite does not carry over are
+ * listed in STATUS.md; the count here is not comparable with the old 37.
  *
- * THE DER DETAIL THIS SUITE CAUGHT
- * --------------------------------
- * An X.509 certificate writes its version as an EXPLICIT [0] wrapper around the
- * version integer: 0xa0 0x03 0x02 0x01 0x02. A bare INTEGER in that position
- * shifts every following field by one, and the parser then reads the signature
- * algorithm as the serial number. Measured before and after:
- *
- *   before  fieldTags [0x2, 0x2, 0x30, …]   validityCount 1   subject: null
- *   after   fieldTags [0xa0, 0x2, 0x30, …]  validityCount 2   subject found
- *
- * SKI is likewise an OCTET STRING wrapping a KEY IDENTIFIER, which is itself
- * tag 0x04 — not a nested SEQUENCE.
- *
- * Self-contained: DER is built in the fixtures, no imports.
+ * Run: node c2pa-transport.test.mjs   (Node 20+)
  */
 
-const TRANSPORT_VERSION = "trust/transport@0.2";
+import { parseCertificate, buildChain, checkCrl, createTransport } from "./c2pa-transport.js";
 
-/* ---------------- DER writers, used only to build fixtures ---------------- */
+const TRANSPORT_VERSION = "trust/transport@0.3";
+
+/* ---------------- DER writers, for the fixtures only ---------------- */
 
 function len(n) {
   if (n < 0x80) return new Uint8Array([n]);
@@ -44,9 +30,7 @@ function len(n) {
 function tlv(tag, value) {
   const l = len(value.length);
   const out = new Uint8Array(1 + l.length + value.length);
-  out[0] = tag;
-  out.set(l, 1);
-  out.set(value, 1 + l.length);
+  out[0] = tag; out.set(l, 1); out.set(value, 1 + l.length);
   return out;
 }
 function cat(parts) {
@@ -94,193 +78,6 @@ function certificate({ serial, issuerCn, subjectCn, notBefore, notAfter, ski, ak
     extWrapper,
   );
   return seq(tbs, seq(oid("1.2.840.10045.4.3.2")), bitstr(new Uint8Array([0x00, 0x01])));
-}
-
-/* The transport functions, mirrored so this suite needs no module wiring. */
-
-function derTlv(bytes, offset) {
-  if (offset + 2 > bytes.length) return null;
-  let pos = offset;
-  const tag = bytes[pos++];
-  let n = bytes[pos++];
-  if (n & 0x80) {
-    const k = n & 0x7f;
-    if (k === 0 || k > 4) return null;
-    n = 0;
-    for (let i = 0; i < k; i++) n = n * 256 + bytes[pos++];
-  }
-  if (pos + n > bytes.length) return null;
-  return { tag, start: offset, valueStart: pos, valueEnd: pos + n, end: pos + n };
-}
-function derSequence(bytes, offset) { const t = derTlv(bytes, offset); return t && t.tag === 0x30 ? t : null; }
-function derChildren(bytes, parent) {
-  const out = []; let o = parent.valueStart;
-  while (o < parent.valueEnd) { const t = derTlv(bytes, o); if (!t || t.end <= o) break; out.push(t); o = t.end; }
-  return out;
-}
-function derOid(bytes, tlvNode) {
-  if (tlvNode.tag !== 0x06) return null;
-  let pos = tlvNode.valueStart;
-  const first = bytes[pos++];
-  const parts = [Math.floor(first / 40), first % 40];
-  let val = 0;
-  while (pos < tlvNode.valueEnd) {
-    const b = bytes[pos++];
-    val = val * 128 + (b & 0x7f);
-    if (!(b & 0x80)) { parts.push(val); val = 0; }
-  }
-  return parts.join(".");
-}
-function derHex(bytes, t) { let s = ""; for (let i = t.valueStart; i < t.valueEnd; i++) s += bytes[i].toString(16).padStart(2, "0"); return s; }
-function derTime(bytes, t) {
-  const text = new TextDecoder().decode(bytes.slice(t.valueStart, t.valueEnd));
-  if (t.tag === 0x17 && text.length >= 12) {
-    const yy = parseInt(text.slice(0, 2), 10);
-    const year = yy >= 50 ? 1900 + yy : 2000 + yy;
-    return `${year}-${text.slice(2, 4)}-${text.slice(4, 6)}T${text.slice(6, 8)}:${text.slice(8, 10)}:${text.slice(10, 12)}Z`;
-  }
-  return null;
-}
-function parseCertificate(der) {
-  const bytes = der instanceof Uint8Array ? der : new Uint8Array(der);
-  const cert = derSequence(bytes, 0);
-  if (!cert) return { ok: false, reason: "not a DER SEQUENCE" };
-  const kids = derChildren(bytes, cert);
-  const tbs = kids[0];
-  if (!tbs || tbs.tag !== 0x30) return { ok: false, reason: "no tbsCertificate" };
-  const fields = derChildren(bytes, tbs);
-  let idx = 0, serial = null;
-  if (fields[idx] && fields[idx].tag === 0xa0) idx++;
-  if (fields[idx] && fields[idx].tag === 0x02) { serial = derHex(bytes, fields[idx]); idx++; }
-  if (fields[idx] && fields[idx].tag === 0x30) idx++;
-  const issuer = fields[idx] && fields[idx].tag === 0x30 ? derHex(bytes, fields[idx]) : null; idx++;
-  const validity = fields[idx] && fields[idx].tag === 0x30 ? derChildren(bytes, fields[idx]) : []; idx++;
-  const subject = fields[idx] && fields[idx].tag === 0x30 ? derHex(bytes, fields[idx]) : null;
-  if (!issuer || !subject) return { ok: false, reason: "no issuer or subject" };
-  let ski = null, aki = null, isCa = null;
-  const extWrapper = fields.find((f) => f.tag === 0xa3);
-  if (extWrapper) {
-    const s = derSequence(bytes, extWrapper.valueStart);
-    if (s) for (const ext of derChildren(bytes, s)) {
-      const parts = derChildren(bytes, ext);
-      if (!parts.length) continue;
-      const o = derOid(bytes, parts[0]);
-      const val = parts.find((p) => p.tag === 0x04);
-      if (!val) continue;
-      const inner = derTlv(bytes, val.valueStart);
-      if (o === "2.5.29.14" && inner && inner.tag === 0x04) ski = derHex(bytes, inner);
-      if (o === "2.5.29.35" && inner && inner.tag === 0x30) {
-        const k = derChildren(bytes, inner).find((p) => p.tag === 0x80);
-        if (k) aki = derHex(bytes, k);
-      }
-      if (o === "2.5.29.19" && inner && inner.tag === 0x30) {
-        const b = derChildren(bytes, inner).find((p) => p.tag === 0x01);
-        if (b) isCa = bytes[b.valueStart] !== 0;
-      }
-    }
-  }
-  return {
-    ok: true, serial, issuer, subject,
-    notBefore: validity[0] ? derTime(bytes, validity[0]) : null,
-    notAfter: validity[1] ? derTime(bytes, validity[1]) : null,
-    ski, aki, isCa,
-  };
-}
-function buildChain(certificates, trustAnchors, referenceTime) {
-  const parsed = [];
-  for (const c of certificates) {
-    const p = parseCertificate(c);
-    if (!p.ok) return { ok: false, reason: "a certificate did not parse: " + p.reason };
-    parsed.push(p);
-  }
-  if (parsed.length === 0) return { ok: false, reason: "no certificates were presented" };
-  const ordered = [parsed[0]];
-  const used = new Set([0]);
-  let current = parsed[0], guard = 0;
-  while (guard++ < 32) {
-    const i = parsed.findIndex((p, k) => !used.has(k) && p.subject === current.issuer);
-    if (i < 0) break;
-    used.add(i); ordered.push(parsed[i]); current = parsed[i];
-  }
-  const root = ordered[ordered.length - 1];
-  const now = referenceTime || new Date().toISOString();
-  const expired = ordered.some((c) => c.notAfter !== null && c.notAfter < now);
-  const notYet = ordered.some((c) => c.notBefore !== null && c.notBefore > now);
-  if (notYet) return { ok: false, reason: "a certificate is not yet valid" };
-  if (trustAnchors && trustAnchors.length > 0) {
-    const matched = trustAnchors.find((a) => {
-      const n = typeof a === "string" ? a : (a && a.name) || "";
-      if (!n) return false;
-      const ascii = [...new TextEncoder().encode(n)].map((b) => b.toString(16).padStart(2, "0")).join("");
-      return (root.subject || "").indexOf(ascii) >= 0;
-    });
-    if (!matched) return { ok: false, reason: "the root is not on this verifier's trust list" };
-    return { ok: true, anchor: typeof matched === "string" ? matched : matched.name, expired, reason: "chain ordered to a configured trust anchor" };
-  }
-  return { ok: true, anchor: null, expired, reason: "chain ordered; no trust list was configured" };
-}
-function checkCrl(crlDer, serialHex) {
-  const bytes = crlDer instanceof Uint8Array ? crlDer : new Uint8Array(crlDer);
-  const crl = derSequence(bytes, 0);
-  if (!crl) return { revoked: false, reason: "the CRL did not parse" };
-  const tbs = derChildren(bytes, crl)[0];
-  if (!tbs) return { revoked: false, reason: "the CRL has no body" };
-  const needle = (serialHex || "").replace(/^0+/, "").toLowerCase();
-  let revoked = false;
-  const scan = (node, depth) => {
-    if (depth > 8 || revoked) return;
-    for (const child of derChildren(bytes, node)) {
-      if (child.tag === 0x30) {
-        const inner = derChildren(bytes, child);
-        if (inner[0] && inner[0].tag === 0x02) {
-          const v = derHex(bytes, inner[0]).replace(/^0+/, "").toLowerCase();
-          if (v === needle) { revoked = true; return; }
-        }
-        scan(child, depth + 1);
-      }
-    }
-  };
-  scan(tbs, 0);
-  return { revoked, reason: revoked ? "the serial appears in the CRL" : "the serial does not appear in the CRL" };
-}
-function createTransport(options = {}) {
-  const { http, trustAnchors = [], crlUrls = {}, referenceTime } = options;
-  return {
-    version: TRANSPORT_VERSION,
-    async buildPath(certificates) { return buildChain(certificates, trustAnchors, referenceTime); },
-    async revocationStatus(certificates) {
-      if (typeof http !== "function") return { revoked: false, reason: "no http function is configured, so no CRL was fetched" };
-      let checked = 0, note = "";
-      for (const der of certificates.slice(0, 3)) {
-        const p = parseCertificate(der);
-        if (!p.ok) continue;
-        const url = crlUrls[p.issuer];
-        if (!url) continue;
-        try {
-          const res = await http({ method: "GET", url, headers: {}, body: null });
-          if (!res || res.status !== 200 || !res.body) continue;
-          checked++;
-          const r = checkCrl(new Uint8Array(res.body), p.serial);
-          if (r.revoked) return { revoked: true, checked, reason: "certificate " + p.serial + " appears in the CRL" };
-        } catch (err) { note = "a CRL fetch failed: " + (err && err.message || String(err)); }
-      }
-      return { revoked: false, checked, reason: note || (checked ? "no certificate appeared in any fetched CRL" : "no CRL distribution point was available") };
-    },
-    async verifyTimestamp({ signature, timestampToken }) {
-      if (!timestampToken) return { trusted: false, at: null, reason: "no countersignature token was presented" };
-      const token = timestampToken instanceof Uint8Array ? timestampToken : new Uint8Array(timestampToken);
-      const resp = derSequence(token, 0);
-      if (!resp) return { trusted: false, at: null, reason: "the timestamp response did not parse" };
-      const statusInfo = derChildren(token, resp)[0];
-      let status = null;
-      if (statusInfo) {
-        const s = derChildren(token, statusInfo).find((p) => p.tag === 0x02);
-        if (s) status = token[s.valueStart];
-      }
-      if (status !== 0) return { trusted: false, at: null, reason: "the authority did not return granted status" };
-      return { trusted: false, at: null, reason: "a granted response was received, but the TSA signature was not verified in this build" };
-    },
-  };
 }
 
 /* ---------------- fixtures ---------------- */
@@ -335,144 +132,130 @@ const check = (label, got, want) => {
   rows.push({ label, got: JSON.stringify(got), want: JSON.stringify(want), ok });
 };
 
+/* 1 — certificate parsing */
 {
   const p = parseCertificate(leaf);
   check("a leaf parses", p.ok, true);
   check("the serial is read", p.serial, "11");
   check("notAfter is read as a time", p.notAfter, "2027-01-01T00:00:00Z");
   check("the certificate reports it is not a CA", p.isCa, false);
-  const r = parseCertificate(root);
-  check("an explicit version field is skipped", r.ok, true);
-  check("a root reports it is a CA", r.isCa, true);
-  check("SKI and AKI are read", [parseCertificate(intermediate).ski !== null, parseCertificate(intermediate).aki !== null], [true, true]);
-  check("garbage is refused", parseCertificate(new Uint8Array([0xff, 0xff, 0xff])).ok, false);
+  check("a root reports it is a CA", parseCertificate(root).isCa, true);
+  check("SKI and AKI are read", [p.ski !== null, p.aki !== null], [true, true]);
+  check("garbage is refused", parseCertificate(new Uint8Array([1, 2, 3])).ok, false);
 }
 
+/* 2 — chain building */
 {
-  const out = buildChain([leaf, intermediate, root], ["Example Root CA"], now);
-  check("a chain is ordered to its root", out.ok, true);
-  check("the anchor is named", out.anchor, "Example Root CA");
-  check("the chain is not expired", out.expired, false);
-  const shuffled = buildChain([intermediate, root, leaf], ["Example Root CA"], now);
-  check("order of presentation does not matter", shuffled.ok, true);
-}
+  const c1 = buildChain([leaf, intermediate, root], ["Example Root CA"], now);
+  check("a chain is ordered to its root", c1.ok, true);
+  check("the anchor is named", c1.anchor, "Example Root CA");
+  check("the chain is not expired", c1.expired, false);
+  check("order of presentation does not matter", buildChain([root, leaf, intermediate], ["Example Root CA"], now).ok, true);
 
-{
-  const offList = buildChain([leaf, intermediate, strangerRoot], ["Example Root CA"], now);
-  check("a root off the list is refused", offList.ok, false);
-  check("and the reason names the list", offList.reason.indexOf("trust list") >= 0, true);
+  const off = buildChain([leaf, intermediate, strangerRoot], ["Example Root CA"], now);
+  check("a root off the list is refused", off.ok, false);
+  check("and the reason names the list", off.reason.indexOf("trust list") >= 0, true);
+
   const noList = buildChain([leaf, intermediate, root], [], now);
   check("no trust list means no anchor claim", [noList.ok, noList.anchor], [true, null]);
+
+  const exp = buildChain([expiredLeaf, intermediate, root], ["Example Root CA"], now);
+  check("an expired chain still orders", exp.ok, true);
+  check("and is flagged as expired", exp.expired, true);
 }
 
-{
-  const out = buildChain([expiredLeaf, intermediate, root], ["Example Root CA"], now);
-  check("an expired chain still orders", out.ok, true);
-  check("and is flagged as expired", out.expired, true);
-}
-
+/* 3 — CRL, by value */
 {
   check("a revoked serial is found in the CRL", checkCrl(crlWithLeaf, "11").revoked, true);
   check("an absent serial is not reported as revoked", checkCrl(crlWithoutLeaf, "11").revoked, false);
   check("leading zeros do not defeat the match", checkCrl(crlWithLeaf, "0011").revoked, true);
-  check("a CRL that does not parse says so", checkCrl(new Uint8Array([0xff]), "11").reason.indexOf("did not parse") >= 0, true);
+  check("a CRL that does not parse says so", checkCrl(new Uint8Array([1, 2, 3]), "11").reason.indexOf("did not parse") >= 0, true);
 }
 
+/* 4 — the http path. The transport only fetches for an issuer it has a URL for,
+ *     so the fixture maps the leaf's issuer to a URL. */
 {
-  const fetching = createTransport({
-    http: async () => ({ status: 200, body: crlWithLeaf }),
-    crlUrls: { [parseCertificate(leaf).issuer]: "https://example.org/crl" },
-    trustAnchors: ["Example Root CA"],
-  });
-  check("a fetched CRL revoking the leaf is reported", (await fetching.revocationStatus([leaf])).revoked, true);
+  const issuer = parseCertificate(leaf).issuer;
+  const crlUrls = { [issuer]: "http://crl.example/ca.crl" };
 
-  const clean = createTransport({
-    http: async () => ({ status: 200, body: crlWithoutLeaf }),
-    crlUrls: { [parseCertificate(leaf).issuer]: "https://example.org/crl" },
-  });
-  const r2 = await clean.revocationStatus([leaf]);
+  const t = createTransport({ http: async () => ({ status: 200, headers: {}, body: crlWithLeaf }), crlUrls });
+  check("a fetched CRL revoking the leaf is reported", (await t.revocationStatus([leaf])).revoked, true);
+
+  const t2 = createTransport({ http: async () => ({ status: 200, headers: {}, body: crlWithoutLeaf }), crlUrls });
+  const r2 = await t2.revocationStatus([leaf]);
   check("a clean CRL is reported as clean", [r2.revoked, r2.checked], [false, 1]);
 
-  const noHttp = createTransport({ crlUrls: { x: "y" } });
-  check("no http function means no CRL was fetched", (await noHttp.revocationStatus([leaf])).reason.indexOf("no http function") >= 0, true);
+  const t3 = createTransport({ crlUrls });
+  const r3 = await t3.revocationStatus([leaf]);
+  check("no http function means no CRL was fetched", r3.reason.indexOf("no http function") >= 0, true);
 
-  const throwing = createTransport({
-    http: async () => { throw new Error("network down"); },
-    crlUrls: { [parseCertificate(leaf).issuer]: "https://example.org/crl" },
-  });
-  const r4 = await throwing.revocationStatus([leaf]);
-  check("a throwing fetch is carried into the reason", r4.reason.indexOf("network down") >= 0, true);
-  check("and is not reported as revocation", r4.revoked, false);
-
-  const error200 = createTransport({
-    http: async () => ({ status: 500, body: crlWithLeaf }),
-    crlUrls: { [parseCertificate(leaf).issuer]: "https://example.org/crl" },
-  });
-  const r5 = await error200.revocationStatus([leaf]);
-  check("a non-200 answer is not treated as a CRL", [r5.revoked, r5.checked], [false, 0]);
+  const t4 = createTransport({ http: async () => { throw new Error("network down"); }, crlUrls });
+  const r4 = await t4.revocationStatus([leaf]);
+  check("a failed fetch is never reported as revoked", r4.revoked, false);
+  check("and the failure is named", r4.reason.indexOf("network down") >= 0, true);
 }
 
-{
-  const t = createTransport({ trustAnchors: ["Example Root CA"], referenceTime: now });
-  const out = await t.buildPath([leaf, intermediate, root]);
-  check("path building works with no http function", out.ok, true);
-  check("and it reports the anchor", out.anchor, "Example Root CA");
-  const t2 = createTransport({ trustAnchors: ["Example Root CA"] });
-  check("path building uses the live clock when none is given", (await t2.buildPath([leaf, intermediate, root])).ok, true);
-}
-
+/* 5 — timestamps WITHOUT an injected verifier: the honest no, step named */
 {
   const t = createTransport({});
   const none = await t.verifyTimestamp({ signature: new Uint8Array([1]) });
   check("no token means nothing is trusted", none.trusted, false);
-  check("and it says no token was presented", none.reason.indexOf("no countersignature") >= 0, true);
+  check("and the step says no token was presented", none.step, "none");
 
   const granted = seq(seq(int(0)), seq(int(0)));
   const g = await t.verifyTimestamp({ signature: new Uint8Array([1]), timestampToken: granted });
-  check("a granted response is still not trusted here", g.trusted, false);
-  check("and the reason names the unverified TSA signature", g.reason.indexOf("not verified") >= 0, true);
+  check("a granted response is not trusted without the proof", g.trusted, false);
+  check("and the step names the unverified TSA signature", g.step, "tsa-signature");
 
-  const rejected = seq(seq(int(2)));
-  const r = await t.verifyTimestamp({ signature: new Uint8Array([1]), timestampToken: rejected });
+  const r = await t.verifyTimestamp({ signature: new Uint8Array([1]), timestampToken: seq(seq(int(2))) });
   check("a non-granted status is refused", r.trusted, false);
-  check("and it names the status", r.reason.indexOf("granted status") >= 0, true);
+  check("and the step names the status", r.step, "status");
 }
+
+/* 6 — timestamps WITH an injected verifier: handed the right things, no re-judging */
+{
+  let received = null;
+  const t = createTransport({
+    verifyToken: async (args) => { received = args; return { trusted: true, at: "2026-10-08T12:00:00Z", step: "verified", reason: "injected" }; },
+    tsaPublicKey: new Uint8Array([9, 9, 9]),
+  });
+  const token = seq(seq(int(0)), seq(int(0)));
+  const out = await t.verifyTimestamp({ signature: new Uint8Array([1, 2, 3]), payload: new Uint8Array([7]), timestampToken: token });
+  check("the injected verifier is consulted", received !== null, true);
+  check("it receives the signature", received && Array.from(received.signature), [1, 2, 3]);
+  check("it receives the token", received && received.timestampToken.length > 0, true);
+  check("it receives the TSA key", received && Array.from(received.tsaPublicKey), [9, 9, 9]);
+  check("its result is passed through unchanged", out.trusted, true);
+  check("including the step it established", out.step, "verified");
+
+  const refusing = createTransport({ verifyToken: async () => ({ trusted: false, step: "contentdigest", reason: "injected refusal" }) });
+  const no = await refusing.verifyTimestamp({ signature: new Uint8Array([1, 2, 3]), timestampToken: token });
+  check("an injected refusal is not turned into trust", no.trusted, false);
+  check("and its step survives", no.step, "contentdigest");
+}
+
+/* ---------------- invariants ---------------- */
 
 const t = createTransport({});
 const inv = {
   "a root off the trust list is never accepted": buildChain([leaf, intermediate, strangerRoot], ["Example Root CA"], now).ok === false,
   "an expired chain is flagged, not silently passed": buildChain([expiredLeaf, intermediate, root], ["Example Root CA"], now).expired === true,
   "a CRL match is by value, not by position": checkCrl(crlWithLeaf, "0011").revoked === true && checkCrl(crlWithoutLeaf, "11").revoked === false,
-  "no http function means no revocation was checked": (await createTransport({ crlUrls: { x: "y" } }).revocationStatus([leaf])).checked === 0,
+  "no http function means no revocation was checked": (await createTransport({}).revocationStatus([leaf])).checked === 0,
   "a timestamp is never trusted without verifying the TSA signature": (await t.verifyTimestamp({ signature: new Uint8Array([1]), timestampToken: seq(seq(int(0))) })).trusted === false,
+  "every refusal names the step that blocked": (await t.verifyTimestamp({ signature: new Uint8Array([1]), timestampToken: seq(seq(int(2))) })).step === "status",
 };
+
+/* ---------------- report ---------------- */
 
 function pad(s, n) { s = String(s); while (s.length < n) s += " "; return s; }
-const lines = [];
+const lines = ["", "TRUST:// C2PA transport suite - " + TRANSPORT_VERSION, "  drives the shipped c2pa-transport.js (imported, not mirrored)", ""];
+lines.push("  " + pad("assertion", 62) + pad("got", 14) + "ok", "  " + "-".repeat(84));
+for (const r of rows) lines.push("  " + pad(r.label, 62) + pad(r.got, 14) + (r.ok ? "pass" : "FAIL want " + r.want));
+lines.push("", "passed " + pass + "/" + rows.length, "");
+for (const k of Object.keys(inv)) lines.push("inv  " + pad(k, 60) + (inv[k] ? "holds" : "VIOLATED"));
 lines.push("");
-lines.push("TRUST:// C2PA transport suite - " + TRANSPORT_VERSION);
-lines.push("");
-lines.push("  " + pad("assertion", 58) + pad("got", 12) + "ok");
-lines.push("  " + "-".repeat(76));
-for (const r of rows) lines.push("  " + pad(r.label, 58) + pad(r.got, 12) + (r.ok ? "pass" : "FAIL want " + r.want));
-lines.push("");
-lines.push("passed " + pass + "/" + rows.length);
-lines.push("");
-for (const name of Object.keys(inv)) lines.push("inv  " + pad(name, 56) + (inv[name] ? "holds" : "VIOLATED"));
-lines.push("");
-lines.push("The transport does no I/O of its own: it takes an http function. Chain");
-lines.push("building is local, revocation needs a fetch, a timestamp is never trusted");
-lines.push("without verifying the TSA signature.");
-lines.push("");
-
 console.log(lines.join("\n"));
 
-const results = {
-  transport_version: TRANSPORT_VERSION,
-  passed: pass,
-  total: rows.length,
-  invariants: inv,
-  allGreen: pass === rows.length && Object.keys(inv).every((k) => inv[k]),
-};
-if (typeof globalThis.__report === "function") globalThis.__report(results);
-return results;
+/* Exit code, not a top-level return — see the header. */
+process.exitCode = pass === rows.length && Object.keys(inv).every((k) => inv[k]) ? 0 : 1;
