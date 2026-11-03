@@ -11,6 +11,11 @@
     "test": "node conformance.mjs && node derivation.test.mjs && node signature.test.mjs && node fingerprint.test.mjs && node c2pa-integration.test.mjs",
     "test:core": "npm test",
     "test:all": "node c2pa-tsr.test.mjs && node c2pa-providers.test.mjs && node c2pa-transport.test.mjs",
-    "demo": "python3 -m http.server 8000"
+    "demo": "python3 -m http.server 8000",
+    "bench": "vitest bench --run"
+  },
+  "devDependencies": {
+    "@codspeed/vitest-plugin": "^6.1.0",
+    "vitest": "^3.2.7"
   }
 }
