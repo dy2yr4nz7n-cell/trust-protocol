@@ -12,7 +12,8 @@
     "test:core": "npm test",
     "test:all": "node c2pa-tsr.test.mjs && node c2pa-providers.test.mjs && node c2pa-transport.test.mjs",
     "demo": "python3 -m http.server 8000",
-    "bench": "vitest bench --run"
+    "bench": "vitest bench --run",
+    "test:auth": "npm --prefix src test"
   },
   "devDependencies": {
     "@codspeed/vitest-plugin": "^6.1.0",

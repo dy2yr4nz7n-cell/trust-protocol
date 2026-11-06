@@ -1,0 +1,10 @@
+{
+  "name": "@trust-protocol/server-auth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Optional server-side JWT authentication for TRUST integrations",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test test/auth.test.mjs" },
+  "dependencies": { "jsonwebtoken": "9.0.3" }
+}

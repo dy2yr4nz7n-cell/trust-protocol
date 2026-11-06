@@ -44,3 +44,24 @@ jobs:
 
       - name: Test
         run: npm test
+
+  auth:
+    name: Server authentication (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18.x, 20.x, 22.x]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+          cache-dependency-path: src/package-lock.json
+      - name: Install server authentication dependencies
+        run: npm ci --prefix src --ignore-scripts
+      - name: Test server authentication
+        run: npm run test:auth
