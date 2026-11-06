@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: trust-verifier
+    runtime: docker
+    dockerfilePath: apps/verifier/Dockerfile
+    dockerContext: apps/verifier
+    plan: starter
+    healthCheckPath: /api/capabilities
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PUBLIC_ORIGIN
+        sync: false
+      - key: C2PATOOL_PATH
+        value: /usr/local/bin/c2patool
