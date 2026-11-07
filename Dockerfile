@@ -5,7 +5,7 @@ RUN test "$TARGETARCH" = amd64
 ADD --checksum=sha256:e2dcd1cfcb872ee4f4cc4b353131615e09b608ed7cdea9f27a7f9d73d5d9af86 https://github.com/contentauth/c2patool/releases/download/v0.28.6/v0.28.6-x86_64-unknown-linux-gnu.tar.gz /tmp/c2patool.tar.gz
 RUN mkdir /opt/c2patool && tar -xzf /tmp/c2patool.tar.gz -C /opt/c2patool --strip-components=1
 
-FROM node:22-bookworm-slim AS build
+FROM node:22-trixie-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/verifier/package.json ./apps/verifier/package.json
@@ -13,7 +13,8 @@ RUN npm ci
 COPY . .
 RUN npm run build && npm prune --omit=dev
 
-FROM node:22-bookworm-slim
+# Official c2patool 0.28.6 requires glibc >= 2.39; Debian trixie provides it.
+FROM node:22-trixie-slim
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends gosu ca-certificates && rm -rf /var/lib/apt/lists/*
