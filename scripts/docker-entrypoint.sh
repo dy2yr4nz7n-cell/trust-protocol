@@ -6,11 +6,22 @@ if [ "$#" -eq 0 ]; then
   exit 64
 fi
 
+uid="$(id -u)" || {
+  echo 'Error: cannot determine container user' >&2
+  exit 70
+}
+case "$uid" in
+  ''|*[!0-9]*)
+    echo 'Error: invalid container user ID' >&2
+    exit 70
+    ;;
+esac
+
 DATA_DIR="${DATA_DIR:-/app/data}"
 export DATA_DIR
 mkdir -p "$DATA_DIR"
 
-if [ "$(id -u)" -eq 0 ]; then
+if [ "$uid" = 0 ]; then
   chown node:node "$DATA_DIR"
   exec gosu node "$@"
 fi
