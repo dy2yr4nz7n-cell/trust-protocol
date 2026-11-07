@@ -17,6 +17,8 @@ case "$uid" in
     ;;
 esac
 
+# Restrict newly created runtime files; do not chmod existing volumes.
+umask 077
 DATA_DIR="${DATA_DIR:-/app/data}"
 export DATA_DIR
 mkdir -p "$DATA_DIR"
