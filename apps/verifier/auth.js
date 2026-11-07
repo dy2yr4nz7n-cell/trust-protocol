@@ -1,8 +1,8 @@
 import jwt from 'jsonwebtoken';
 
 export function createAuth(secret = process.env.JWT_SECRET) {
-  if (typeof secret !== 'string' || Buffer.byteLength(secret) < 32) {
-    throw new Error('JWT_SECRET must contain at least 32 bytes of random secret material');
+  if (typeof secret !== 'string' || !secret.trim() || Buffer.byteLength(secret) < 32) {
+    throw new Error('JWT_SECRET must contain at least 32 bytes of random secret material and must not be whitespace-only');
   }
   const issuer = 'trust-protocol', audience = 'trust-verifier-api';
   function createAccessToken(user) {
