@@ -2,9 +2,13 @@ name: Workspace runtime
 on: [push, pull_request]
 permissions:
   contents: read
+concurrency:
+  group: workspace-runtime-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   runtime:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -15,13 +19,66 @@ jobs:
       - run: npm run test:ci
       - run: npm audit --omit=dev
       - run: docker build -t trust-workspace .
-      - name: Check container health and UI
+      - name: Check configured container health and UI
+        shell: bash
         run: |
-          docker run -d --name trust-workspace -p 3000:3000 trust-workspace
+          set -euo pipefail
+          JWT_SECRET="$(node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('hex'))")"
+          echo "::add-mask::$JWT_SECRET"
+          export JWT_SECRET
+          docker run -d --name trust-workspace \
+            -p 127.0.0.1:3000:3000 \
+            -e JWT_SECRET \
+            -e PUBLIC_ORIGIN=http://127.0.0.1:3000 \
+            trust-workspace
+          unset JWT_SECRET
+          ready=false
           for attempt in $(seq 1 30); do
-            if curl --fail http://localhost:3000/health; then break; fi
-            if [ "$attempt" -eq 30 ]; then docker logs trust-workspace; exit 1; fi
+            if curl --fail --silent --show-error \
+              --connect-timeout 2 --max-time 3 \
+              http://127.0.0.1:3000/health \
+              --output "$RUNNER_TEMP/trust-health.json"; then
+              ready=true
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' trust-workspace)" != true ]; then
+              echo '::error::Container exited before becoming healthy'
+              exit 1
+            fi
             sleep 1
           done
-          curl --fail http://localhost:3000/ | grep 'PRÜF-WORKSPACE'
-          curl --fail http://localhost:3000/health | grep '"available":true'
+          if [ "$ready" != true ]; then
+            echo '::error::Container health endpoint did not become ready'
+            exit 1
+          fi
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import assert from "node:assert/strict";
+            const health = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/trust-health.json", "utf8"));
+            assert.equal(health.status, "ok");
+            assert.equal(health.apiConfigured, true, "API must be configured");
+            assert.equal(health.c2pa?.available, true, "C2PA tool must be available");
+          '
+          curl --fail --silent --show-error \
+            --connect-timeout 2 --max-time 10 \
+            http://127.0.0.1:3000/ \
+            --output "$RUNNER_TEMP/trust-ui.html"
+          grep -Fq 'PRÜF-WORKSPACE' "$RUNNER_TEMP/trust-ui.html"
+      - name: Capture container diagnostics
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          mkdir -p ci-diagnostics
+          docker logs trust-workspace > ci-diagnostics/container.log 2>&1 || true
+          docker inspect --format '{{json .State}}' trust-workspace > ci-diagnostics/container-state.json 2>&1 || true
+      - name: Upload container diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace-runtime-diagnostics-${{ github.run_attempt }}
+          path: ci-diagnostics/
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Remove test container
+        if: ${{ always() }}
+        run: docker rm -f trust-workspace >/dev/null 2>&1 || true
