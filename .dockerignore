@@ -1,10 +1,48 @@
+# Version control and installed dependencies
 .git
+**/.git
 node_modules
-apps/verifier/node_modules
+**/node_modules
+
+# Generated output
 dist
 output
+coverage
+**/coverage
+playwright-report
+**/playwright-report
+test-results
+**/test-results
+blob-report
+**/blob-report
+
+# Local environment files; keep only the root example
 .env
 .env.*
+**/.env
+**/.env.*
 !/.env.example
-data
+
+# Local credentials
 access-token.txt
+**/access-token.txt
+.npmrc
+**/.npmrc
+**/.ssh
+**/.aws
+
+# User uploads and runtime data (not test fixtures)
+data
+**/data
+uploads
+**/uploads
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite-*
+**/*.sqlite3-*
+*.log
+**/*.log
