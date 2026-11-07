@@ -15,12 +15,15 @@ const limits = [
 export class CheckError extends Error {
   constructor(message, status = 422) { super(message); this.status = status; }
 }
-export function mediaExtension(bytes) {
+export function mediaExtension(bytes, extended = false) {
   if (!Buffer.isBuffer(bytes)) throw new CheckError('Expected file bytes', 400);
   if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return '.jpg';
   if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return '.png';
   if (bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return '.webp';
-  throw new CheckError('Only JPEG, PNG and WebP file signatures are accepted', 415);
+  if (extended && bytes.length >= 12 && bytes.toString('ascii', 4, 8) === 'ftyp') return '.mp4';
+  if (extended && bytes.length >= 5 && bytes.toString('ascii', 0, 5) === '%PDF-') return '.pdf';
+  if (extended && bytes.length >= 4 && ['49492a00', '4d4d002a'].includes(bytes.subarray(0, 4).toString('hex'))) return '.tif';
+  throw new CheckError('Unsupported file signature', 415);
 }
 export function summariseReport(report, trustConfigured = false) {
   const manifest = report?.manifests?.[report?.active_manifest];
@@ -67,10 +70,10 @@ export async function createC2paService({ binary = process.env.C2PATOOL_PATH || 
   try { version = (await run(binary, ['--version'], options)).stdout.trim(); available = version === `c2patool ${TOOL_VERSION}`; } catch { /* reported via capabilities */ }
   return {
     status: () => ({ available: available && !closed, version, requiredVersion: TOOL_VERSION, trustConfigured: Boolean(anchors), aiDetectorAvailable: false }),
-    async verify(bytes) {
+    async verify(bytes, { maxBytes = MAX_BYTES, extended = false } = {}) {
       if (!available || closed) throw new CheckError('C2PA verifier unavailable or unsupported version', 503);
-      if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MAX_BYTES) throw new CheckError('Invalid file size (maximum 8 MiB)', 413);
-      const extension = mediaExtension(bytes), work = await mkdtemp(join(tmpdir(), 'trust-upload-'));
+      if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > maxBytes) throw new CheckError('Invalid file size', 413);
+      const extension = mediaExtension(bytes, extended), work = await mkdtemp(join(tmpdir(), 'trust-upload-'));
       try {
         const path = join(work, `asset${extension}`);
         await writeFile(path, bytes, { mode: 0o600 });

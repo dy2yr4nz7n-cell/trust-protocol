@@ -193,4 +193,4 @@ const results = {
 };
 if (typeof globalThis.__report === "function") globalThis.__report(results);
 
-return results;
+if (typeof process !== "undefined") process.exitCode = results.allGreen ? 0 : 1;

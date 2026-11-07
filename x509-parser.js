@@ -305,7 +305,9 @@ function parseName(nameParser) {
 
   while (!nameParser.isEof()) {
     const rdn = [];
-    const rdnParser = nameParser.readSequence();
+    const rdnSet = nameParser.readTlv();
+    if (rdnSet.tag !== 0x31) throw new Error("DER: expected RDN SET");
+    const rdnParser = new DerParser(rdnSet.value);
 
     while (!rdnParser.isEof()) {
       const attr = rdnParser.readSequence();
@@ -386,7 +388,7 @@ function parsePublicKeyInfo(spkiParser) {
 }
 
 const CURVE_OIDS = {
-  "1.2.840.10045.3.1.1": "P-256",
+  "1.2.840.10045.3.1.7": "P-256",
   "1.3.132.0.34": "P-384",
   "1.3.132.0.35": "P-521",
 };

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="de">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Trust Protocol · Lokale Analyse</title><link rel="stylesheet" href="/styles.css"><script src="/app.js" defer></script></head>
+<body>
+<header><div class="brand"><span class="mark">TP</span><div><h1>Trust Protocol</h1><p>Lokale Dateiintegrität · v0.4.0</p></div></div><span id="health" class="pill">Backend wird geprüft …</span></header>
+<main>
+<section class="intro"><p class="eyebrow">NACHWEISE STATT VERSPRECHEN</p><h2>Prüfen, was tatsächlich prüfbar ist.</h2><p>Berechne den SHA-256-Hash einer Datei und vergleiche ihn optional mit einem unabhängigen Referenzwert. Kein Upload an externe Dienste.</p></section>
+<div class="notice"><strong>Wichtige Grenze:</strong> Ein passender Hash beweist keine Herkunft oder Echtheit. C2PA, Signaturen, Zertifikate, Hardware und KI-Erkennung sind hier nicht implementiert.</div>
+<nav class="tabs" aria-label="Betriebsart"><button id="tab-live" class="selected" type="button" aria-controls="live" aria-pressed="true">Echte Dateianalyse</button><button id="tab-demo" type="button" aria-controls="demo" aria-pressed="false">Simulation · fiktiv</button></nav>
+<section id="live" class="grid">
+<div class="panel"><p class="eyebrow">01 · DATEI</p><h2>Integrität untersuchen</h2>
+<form id="analyze-form"><label for="file">Datei auswählen · maximal 15 MiB</label><input id="file" type="file" required><p id="file-info" class="muted">Noch keine Datei ausgewählt.</p>
+<label for="expected">Referenz-SHA-256 <span class="muted">(optional)</span></label><input id="expected" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="64 Hex-Zeichen" maxlength="64"><p class="muted small">Ohne Referenzwert wird nur ein Fingerabdruck berechnet. Verwende nach Möglichkeit einen authentisch veröffentlichten Referenzwert.</p>
+<div class="actions"><button id="run" type="submit">Datei analysieren</button><button id="cancel" class="secondary" type="button" hidden>Abbrechen</button></div></form>
+<p id="progress" role="status" aria-live="polite">Bereit.</p></div>
+<div class="panel"><p class="eyebrow">02 · BEFUND</p><h2 id="result-title">Noch kein Ergebnis</h2><p id="result-desc" class="muted">Keine Prüfung ausgeführt. Der Standardstatus ist nicht „verifiziert“.</p>
+<dl><dt>Datei-Hash</dt><dd id="hash" class="mono">—</dd><dt>Referenzvergleich</dt><dd id="comparison">Nicht ausgeführt</dd><dt>Herkunft / Echtheit</dt><dd>Nicht bewertet</dd><dt>C2PA / Signatur / X.509</dt><dd>Nicht implementiert</dd><dt>Widerruf / Hardware / KI-Erkennung</dt><dd>Nicht implementiert</dd></dl>
+<div class="actions"><button id="download" class="secondary" type="button" disabled>JSON exportieren</button><button id="delete" class="secondary" type="button" disabled>Ergebnis löschen</button></div><p class="muted small">Dateibytes werden während der Übertragung gehasht und nicht als Datei gespeichert. Ergebnisse laufen nach 10 Minuten ab; Downloads liegen anschließend bei dir.</p></div>
+</section>
+<section id="demo" class="panel" hidden><p class="eyebrow">SIMULATION · KEINE ECHTE PRÜFUNG</p><h2>Die vier ursprünglichen Szenarien</h2><p>Diese Ansicht illustriert ausschließlich mögliche Zustände. Sie untersucht keine hochgeladene Datei und liefert keine gemessenen KI-Wahrscheinlichkeiten.</p><label for="scenario">Demo-Szenario</label><select id="scenario"><option value="authentic">Gültiger Herkunftsnachweis (fiktiv)</option><option value="ai_manipulated">KI-Warnung (fiktiv)</option><option value="revoked_cert">Zertifikat widerrufen (fiktiv)</option><option value="corrupted_manifest">Manifest-Fehler (fiktiv)</option></select><button id="run-demo" type="button">Simulation anzeigen</button><p id="demo-status" role="status"></p><pre id="demo-json">Noch keine Simulation ausgeführt.</pre></section>
+<section class="panel telemetry"><div class="section-head"><div><p class="eyebrow">TRANSPARENZ</p><h2>Unveränderter API-Befund</h2></div><span class="pill">Kein Trust-Score</span></div><pre id="json-output">Noch keine Live-Analyse ausgeführt.</pre></section>
+</main><footer>Local-first · Ohne CDN und Laufzeitpakete · Nur auf 127.0.0.1 erreichbar · Kein produktionsreifes Forensiksystem</footer>
+</body></html>

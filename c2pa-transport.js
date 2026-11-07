@@ -126,6 +126,7 @@ export function parseCertificate(der) {
   const issuer = fields[idx] && fields[idx].tag === 0x30 ? derHex(bytes, fields[idx]) : null; idx++;
   const validity = fields[idx] && fields[idx].tag === 0x30 ? derChildren(bytes, fields[idx]) : []; idx++;
   const subject = fields[idx] && fields[idx].tag === 0x30 ? derHex(bytes, fields[idx]) : null;
+  idx++;
   if (!issuer || !subject) return { ok: false, reason: "certificate has no issuer or subject" };
 
   /* SubjectPublicKeyInfo: the full TLV, because WebCrypto's importKey("spki")

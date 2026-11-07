@@ -89,7 +89,7 @@ function name(...attributes) {
 
 const OID = {
   ecPublicKey: "1.2.840.10045.2.1",
-  prime256v1: "1.2.840.10045.3.1.1",
+  prime256v1: "1.2.840.10045.3.1.7",
   secp384r1: "1.3.132.0.34",
   secp521r1: "1.3.132.0.35",
   ecdsaWithSHA256: "1.2.840.10045.4.3.2",
@@ -142,7 +142,7 @@ async function mintCert({
       issuer,
       tlv(0x30, cat(utcTime(notBefore), utcTime(notAfter))),
       subject,
-      tlv(0x30, cat(algorithm, tlv(0x03, cat(Uint8Array.of(0), spki))))
+      spki
     )
   );
 

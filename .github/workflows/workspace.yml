@@ -1,0 +1,27 @@
+name: Workspace runtime
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:ci
+      - run: npm audit --omit=dev
+      - run: docker build -t trust-workspace .
+      - name: Check container health and UI
+        run: |
+          docker run -d --name trust-workspace -p 3000:3000 trust-workspace
+          for attempt in $(seq 1 30); do
+            if curl --fail http://localhost:3000/health; then break; fi
+            if [ "$attempt" -eq 30 ]; then docker logs trust-workspace; exit 1; fi
+            sleep 1
+          done
+          curl --fail http://localhost:3000/ | grep 'PRÜF-WORKSPACE'
+          curl --fail http://localhost:3000/health | grep '"available":true'

@@ -8,7 +8,7 @@ import { createAuth } from './auth.js';
 import { validateMetadata } from './schema.js';
 import { MAX_BYTES } from './c2pa.js';
 
-export function createApp({ service, secret = process.env.JWT_SECRET, origin = 'http://127.0.0.1:3000' }) {
+export function createApp({ service, secret = process.env.JWT_SECRET, origin = 'http://127.0.0.1:3000', inspection }) {
   if (new URL(origin).origin !== origin || !/^https?:/.test(origin)) throw new Error('PUBLIC_ORIGIN must be an exact HTTP(S) origin');
   const auth = createAuth(secret), app = express();
   app.disable('x-powered-by');
@@ -20,6 +20,7 @@ export function createApp({ service, secret = process.env.JWT_SECRET, origin = '
   });
   app.use('/api', rateLimit({ windowMs: 60000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false }));
   app.use('/api', auth.verifyToken);
+  if (inspection) app.use('/api/inspection', inspection);
   app.get('/api/capabilities', (_req, res) => res.json(service.status()));
   let active = 0;
   const gate = (req, res, next) => {

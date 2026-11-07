@@ -222,4 +222,4 @@ console.log(lines.join("\n"));
 
 const results = { spec_version: SPEC_VERSION, invariants: inv, pass: pass, total: Object.keys(inv).length, allGreen: pass === Object.keys(inv).length };
 if (typeof globalThis.__report === "function") globalThis.__report(results);
-return results;
+if (typeof process !== "undefined") process.exitCode = results.allGreen ? 0 : 1;

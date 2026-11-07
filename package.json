@@ -4,10 +4,22 @@
   "private": true,
   "description": "TRUST:// — open standard for verifiable provenance and integrity",
   "type": "module",
+  "workspaces": [
+    "apps/verifier"
+  ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19"
   },
   "scripts": {
+    "start": "node server.js",
+    "setup": "node scripts/setup.mjs",
+    "token": "node scripts/token.mjs",
+    "start:local": "node packages/local-integrity/server.js",
+    "test:local": "npm test --prefix packages/local-integrity",
+    "build": "node scripts/build.mjs",
+    "test:runtime": "node --test test/*.test.mjs",
+    "test:verifier": "npm test --workspace apps/verifier",
+    "test:ci": "npm test && npm run test:all && node x509-parser.test.mjs && node c2pa-verifier.test.mjs && node policy-fingerprint.test.mjs && npm run test:verifier && npm run test:local && npm run build && npm run test:runtime",
     "test": "node conformance.mjs && node derivation.test.mjs && node signature.test.mjs && node fingerprint.test.mjs && node c2pa-integration.test.mjs",
     "test:core": "npm test",
     "test:all": "node c2pa-tsr.test.mjs && node c2pa-providers.test.mjs && node c2pa-transport.test.mjs",
@@ -16,6 +28,11 @@
   },
   "devDependencies": {
     "@codspeed/vitest-plugin": "^6.1.0",
-    "vitest": "^3.2.7"
+    "tailwindcss": "^3.4.17",
+    "vitest": "^4.1.12"
+  },
+  "dependencies": {
+    "exifreader": "^4.54.0",
+    "sqlite3": "^6.0.1"
   }
 }

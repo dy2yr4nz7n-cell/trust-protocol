@@ -433,7 +433,7 @@ const check = (section, label, got, want) => {
   const hash = new Uint8Array(32).fill(0x11);
   check("B", "digest found under the hash key", findDigest(decodeCbor(claim(hash)).value) !== null, true);
   check("B", "digest nested deeper is found", findDigest({ a: [{ b: { hash } }] }) !== null, true);
-  check("B", "a 32-byte byte string is itself a digest", findDigest(new Uint8Array(32).fill(1)) !== null, true);
+  check("B", "a bare byte string is not a declared digest", findDigest(new Uint8Array(32).fill(1)), null);
   check("B", "a 31-byte value is not a digest", findDigest({ hash: new Uint8Array(31) }), null);
   check("B", "no digest in an empty map", findDigest({}), null);
 }
@@ -581,4 +581,4 @@ const results = {
   allGreen: pass === rows.length && Object.keys(inv).every((k) => inv[k]),
 };
 if (typeof globalThis.__report === "function") globalThis.__report(results);
-return results;
+if (typeof process !== "undefined") process.exitCode = results.allGreen ? 0 : 1;

@@ -1,0 +1,12 @@
+{
+  "name": "trust-protocol-local",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Lokale Dateiintegritätsanalyse. Kein C2PA-Validator und kein KI-Detektor.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  }
+}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="TRUST Protocol: lokale Dateiintegrität, Protokoll-Engine und klar gekennzeichnete Simulation.">
+<title>TRUST Protocol | Prüf-Workspace</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><a class="brand" href="./">TRUST<span>://</span></a><span class="version">PRÜF-WORKSPACE · 0.3</span></header>
+<main>
+<div class="intro"><p class="eyebrow">EVIDENZ STATT VERMUTUNG</p><h1>Was lässt sich über eine Datei belegen?</h1><p>Dateiintegrität prüfen. Herkunft getrennt bewerten. Unbekanntes sichtbar lassen.</p></div>
+<nav aria-label="Werkzeuge"><a href="inspection/index.html">Medienprüfung &amp; Verlauf <span>↗</span></a><a href="protocol/index.html">Protokoll-Engine <span>↗</span></a><a href="simulator/index.html">Architektur-Simulator <span>↗</span></a><a href="verifier/index.html">C2PA-Prüfung <span>↗</span></a></nav>
+<section class="workspace" aria-labelledby="hash-title">
+<div class="input-panel"><p class="eyebrow">01 / DATEIINTEGRITÄT</p><h2 id="hash-title">Lokaler Fingerabdruck</h2><p>Berechnet SHA-256 direkt in deinem Browser. Die Datei wird nicht hochgeladen.</p>
+<label class="drop" for="file"><span class="file-mark">+</span><strong>Datei auswählen</strong><span>Beliebiges Format, maximal 64 MiB</span><input id="file" type="file"></label>
+<label for="expected">Bekannter SHA-256 <span>(optional)</span></label><input id="expected" type="text" spellcheck="false" placeholder="64 hexadezimale Zeichen">
+<p class="hint">Ein übereinstimmender Hash belegt gleiche Bytes, nicht eine vertrauenswürdige Herkunft.</p>
+<div class="actions"><button id="export" disabled>JSON exportieren</button><button class="secondary" id="reset">Zurücksetzen</button></div>
+</div>
+<div class="output-panel"><div class="result-head"><p class="eyebrow">02 / PRÜFBERICHT</p><span id="badge" class="badge">BEREIT</span></div>
+<h2 id="result-title">Noch keine Datei ausgewählt</h2><p id="status" role="status" aria-live="polite">Wähle eine Datei, um ihren eindeutigen Fingerabdruck zu berechnen.</p>
+<dl><div><dt>DATEI</dt><dd id="filename">Nicht ausgewählt</dd></div><div><dt>GRÖSSE</dt><dd id="size">Nicht berechnet</dd></div><div><dt>SHA-256</dt><dd id="hash" class="mono">Noch kein Fingerabdruck</dd></div><div><dt>HASH-VERGLEICH</dt><dd id="comparison">Kein Referenzwert angegeben</dd></div></dl>
+<div class="boundary"><strong>Prüfgrenze</strong><p>Kein KI-Detektor. Kein Herkunftsbeweis durch einen Hash. Für eingebettete Herkunftsnachweise nutze die konfigurierte C2PA-API.</p></div>
+</div></section>
+<section class="notes"><div><p class="eyebrow">PROTOKOLL-ENGINE</p><h2>Nachweise nachvollziehen</h2><p>Die bestehende Engine leitet TRUST-Records ab und trennt Herkunft, Integrität und Erzeugungsbehauptungen. Beispielnachweise bleiben Demo-Daten.</p></div><div><p class="eyebrow">ARCHITEKTUR-SIMULATOR</p><h2>Szenarien verstehen</h2><p>Die hochgeladene Oberfläche bleibt als Simulator erhalten. Alle Signaturen, KI-Werte, Widerrufe und Laufzeiten dort sind fiktiv.</p></div></section>
+</main><footer><span>TRUST Protocol · Evidence-first verification</span><span>Lokale Prüfung ohne Speicherung</span></footer>
+<script type="module" src="app.js"></script>
+</body></html>

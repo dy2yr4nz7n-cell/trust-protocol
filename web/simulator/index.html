@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trust Protocol – Architektur & Forensics Suite</title>
+  <link rel="stylesheet" href="tailwind.css">
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #101827;
+      --panel-soft: #111c2f;
+      --border: #1f2d3d;
+      --text: #e5edf8;
+      --muted: #9aa9bc;
+      --cyan: #67e8f9;
+      --emerald: #34d399;
+      --amber: #fbbf24;
+      --rose: #f87171;
+      --slate: #cbd5e1;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .mono {
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    header > div { height: auto !important; min-height: 64px; gap: 16px; flex-wrap: wrap; padding-block: 16px; }
+    header > div > div { min-width: 0; }
+    @media (max-width: 600px) { header > div > div:last-child { flex-wrap: wrap; } }
+    [class~="text-[10px]"], [class~="text-[11px]"] { font-size: 12px; }
+    .text-slate-500 { color: #9aa9bc; }
+
+    .panel {
+      background: rgba(17, 24, 39, 0.8);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+    }
+
+    .soft-panel {
+      background: rgba(16, 24, 38, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+    }
+
+    .glow {
+      box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.17), 0 0 28px rgba(103, 232, 249, 0.12);
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 9999px;
+      background: var(--emerald);
+      box-shadow: 0 0 12px rgba(52, 211, 153, 0.8);
+      animation: pulse 1.8s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.65; transform: scale(0.95); }
+      50% { opacity: 1; transform: scale(1.06); }
+    }
+
+    .card-hover {
+      transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+
+    .card-hover:hover {
+      transform: translateY(-2px);
+      border-color: rgba(103, 232, 249, 0.35);
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+  <div role="note" style="padding:16px;background:#422006;color:#fef3c7;text-align:center;font:14px/1.6 system-ui">
+    <strong>SIMULATION: Keine echte Prüfung.</strong> Alle Signaturen, KI-Werte, Widerrufe und Laufzeiten auf dieser Seite sind fiktive Beispieldaten.
+    <a href="../index.html" style="color:inherit;text-decoration:underline">Zur lokalen Dateiprüfung</a>
+  </div>
+  <header class="sticky top-0 z-40 border-b border-slate-800 bg-slate-950/80 backdrop-blur">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-lg border border-emerald-500/50 bg-emerald-500/10 flex items-center justify-center text-emerald-400 font-bold mono">
+          TP
+        </div>
+        <div>
+          <div class="text-base font-semibold text-white tracking-wide">Trust Protocol Infrastructure</div>
+          <div class="text-[11px] text-slate-400">End-to-End Forensics & Hardware Proof System</div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <span class="inline-flex items-center gap-2 rounded-full border border-emerald-800 bg-emerald-950/70 px-2.5 py-1 text-[11px] text-emerald-300">
+          <span class="status-dot"></span>
+          Simulation aktiv
+        </span>
+        <span class="mono text-[11px] text-slate-500">Demo / keine Produktionsprüfung</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    <section class="panel p-6">
+      <div class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+        <svg class="w-4 h-4 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 11H5m14 0a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2m14 0V9a2 2 0 0 0-2-2M5 11V9a2 2 0 0 1 2-2m0 0V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2M7 7h10" />
+        </svg>
+        Real-time Pipeline Architecture Flow
+      </div>
+
+      <div class="mt-6 grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div class="soft-panel p-4 card-hover">
+          <div class="mono text-[10px] text-cyan-400">NODE 01</div>
+          <h3 class="mt-2 text-sm font-semibold text-slate-100">Hardware Capture</h3>
+          <p class="mt-2 text-xs text-slate-400">Client-side ECDSA signing at the source of the asset.</p>
+          <div class="mt-4 pt-3 border-t border-slate-800 text-[10px] mono flex justify-between text-slate-500">
+            <span>LATENCY</span>
+            <span class="text-emerald-400">1.2 ms</span>
+          </div>
+        </div>
+
+        <div class="soft-panel p-4 card-hover">
+          <div class="mono text-[10px] text-cyan-400">NODE 02</div>
+          <h3 class="mt-2 text-sm font-semibold text-slate-100">Rust Core</h3>
+          <p class="mt-2 text-xs text-slate-400">High-throughput validation engine for manifest and provenance parsing.</p>
+          <div class="mt-4 pt-3 border-t border-slate-800 text-[10px] mono flex justify-between text-slate-500">
+            <span>LATENCY</span>
+            <span class="text-emerald-400">0.4 ms</span>
+          </div>
+        </div>
+
+        <div class="soft-panel p-4 card-hover">
+          <div class="mono text-[10px] text-cyan-400">NODE 03</div>
+          <h3 class="mt-2 text-sm font-semibold text-slate-100">DLT Revocation</h3>
+          <p class="mt-2 text-xs text-slate-400">Decentralized PKI ledger and revocation status verification.</p>
+          <div class="mt-4 pt-3 border-t border-slate-800 text-[10px] mono flex justify-between text-slate-500">
+            <span>LATENCY</span>
+            <span class="text-emerald-400">14.8 ms</span>
+          </div>
+        </div>
+
+        <div class="soft-panel p-4 card-hover">
+          <div class="mono text-[10px] text-cyan-400">NODE 04</div>
+          <h3 class="mt-2 text-sm font-semibold text-slate-100">AI Deepfake Check</h3>
+          <p class="mt-2 text-xs text-slate-400">Artifact-based forensic analysis and synthetic-content risk detection.</p>
+          <div class="mt-4 pt-3 border-t border-slate-800 text-[10px] mono flex justify-between text-slate-500">
+            <span>LATENCY</span>
+            <span class="text-emerald-400">32.1 ms</span>
+          </div>
+        </div>
+
+        <div class="soft-panel p-4 card-hover border border-emerald-900/60 bg-emerald-950/10">
+          <div class="mono text-[10px] text-emerald-400">OUTPUT</div>
+          <h3 class="mt-2 text-sm font-semibold text-slate-100">Trust Dashboard</h3>
+          <p class="mt-2 text-xs text-slate-400">Unified state for provenance, cryptographic integrity, and audit evidence.</p>
+          <div class="mt-4 pt-3 border-t border-slate-800 text-[10px] mono flex justify-between text-emerald-400">
+            <span>STATUS</span>
+            <span>VERIFIED</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <aside class="panel p-6">
+        <div class="flex items-center gap-2 text-sm font-semibold text-slate-200">
+          <svg class="w-4 h-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 6V4m0 2a2 2 0 1 0 0 4m0-4a2 2 0 1 1 0 4m-6 8a2 2 0 1 0 0-4m0 4a2 2 0 1 1 0-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 1 0 0-4m0 4a2 2 0 1 1 0-4m0 4v2m0-6V4" />
+          </svg>
+          Asset Simulator
+        </div>
+
+        <p class="mt-3 text-xs text-slate-400">Run validation scenarios across observable proof layers.</p>
+
+        <div class="mt-6 space-y-4">
+          <div>
+            <label class="block text-[11px] text-slate-400 mono mb-1">Target Asset ID</label>
+            <input id="asset-id" type="text" value="asset_img_2026_0911_x89.jpg" readonly class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-[11px] text-slate-300 mono focus:outline-none" />
+          </div>
+
+          <div>
+            <label class="block text-[11px] text-slate-400 mono mb-1">Scenario</label>
+            <select id="test-scenario" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-[11px] text-slate-300 mono focus:outline-none focus:border-cyan-500">
+              <option value="authentic">Authentic hardware-signed asset</option>
+              <option value="ai_manipulated">AI-generated synthetic artifact</option>
+              <option value="revoked_cert">Revoked DLT PKI certificate</option>
+              <option value="corrupted_manifest">Corrupted manifest / hash mismatch</option>
+            </select>
+          </div>
+        </div>
+
+        <button id="btn-run-simulation" class="mt-8 w-full rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium py-2.5 transition-colors">
+          Run forensic validation sequence
+        </button>
+      </aside>
+
+      <div class="lg:col-span-2 panel p-6">
+        <div class="flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2 text-sm font-semibold text-slate-200">
+            <svg class="w-4 h-4 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0 1 12 2.944a11.955 11.955 0 0 1-8.618 3.04A12.02 12.02 0 0 0 3 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+            Live Forensic Diagnostic Panel
+          </div>
+          <span id="validation-time" class="mono text-[11px] text-slate-500">Processed in 48.5 ms</span>
+        </div>
+
+        <div id="status-banner" class="mt-5 flex items-start gap-3 rounded-lg border border-emerald-800 bg-emerald-950/70 p-4">
+          <div id="status-icon" class="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/15 text-sm font-bold text-emerald-300">✓</div>
+          <div>
+            <div id="status-title" class="text-sm font-semibold text-emerald-300">Integrity & provenance verified</div>
+            <div id="status-description" class="mt-1 text-xs text-emerald-400/80">Manifest valid. Provenance chain verified against the configured trust root.</div>
+          </div>
+        </div>
+
+        <div class="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div class="soft-panel p-3.5">
+            <div class="text-[11px] mono text-slate-500">HARDWARE SIGNATURE</div>
+            <div id="metric-hardware" class="mt-1 text-xs font-semibold text-slate-200 mono">ECDSA_P256 (Camera #4829)</div>
+          </div>
+
+          <div class="soft-panel p-3.5">
+            <div class="text-[11px] mono text-slate-500">C2PA / JUMBF MANIFEST</div>
+            <div id="metric-manifest" class="mt-1 text-xs font-semibold text-emerald-400 mono">VALID (SHA256 match)</div>
+          </div>
+
+          <div class="soft-panel p-3.5">
+            <div class="text-[11px] mono text-slate-500">DECENTRALIZED PKI / DLT</div>
+            <div id="metric-pki" class="mt-1 text-xs font-semibold text-emerald-400 mono">ACTIVE (Not revoked)</div>
+          </div>
+
+          <div class="soft-panel p-3.5">
+            <div class="text-[11px] mono text-slate-500">AI ARTIFACT INFERENCE</div>
+            <div id="metric-ai" class="mt-1 text-xs font-semibold text-emerald-400 mono">3.2% synthetic score</div>
+          </div>
+        </div>
+
+        <div class="mt-6 border-t border-slate-800 pt-4">
+          <div class="mb-2 flex items-center justify-between text-[11px] mono text-slate-500">
+            <span>JSON TELEMETRY PAYLOAD</span>
+            <span class="text-cyan-400">REST API v1</span>
+          </div>
+
+          <pre id="json-console" class="max-h-52 overflow-auto rounded-lg border border-slate-800 bg-slate-950 p-3 text-[11px] text-cyan-300 mono">{
+  "asset_id": "asset_img_2026_0911_x89.jpg",
+  "status": "VERIFIED",
+  "c2pa_parsed": true,
+  "hash_valid": true,
+  "dlt_revocation_check": "PASSED",
+  "ai_synthetic_probability": 0.032
+}</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="panel p-5">
+        <div class="text-[11px] uppercase tracking-[0.12em] text-slate-400 mono">Trust principles</div>
+        <h3 class="mt-2 text-lg font-semibold text-slate-100">Evidence-first verification</h3>
+        <p class="mt-2 text-sm text-slate-400">Every asset is evaluated through cryptographic proof, trusted roots, and observable provenance data before it is marked as trustworthy.</p>
+      </div>
+
+      <div class="panel p-5">
+        <div class="text-[11px] uppercase tracking-[0.12em] text-slate-400 mono">Operational model</div>
+        <h3 class="mt-2 text-lg font-semibold text-slate-100">Distributed validation</h3>
+        <p class="mt-2 text-sm text-slate-400">The system separates capture, validation, trust policy, and evidence reporting so each stage can be audited independently.</p>
+      </div>
+
+      <div class="panel p-5">
+        <div class="text-[11px] uppercase tracking-[0.12em] text-slate-400 mono">Security boundary</div>
+        <h3 class="mt-2 text-lg font-semibold text-slate-100">Conservative reporting</h3>
+        <p class="mt-2 text-sm text-slate-400">Ambiguous or conflicting evidence is not promoted to “verified”; results stay explicit, reproducible, and reviewable.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="border-t border-slate-800 bg-slate-950 py-4">
+    <div class="max-w-7xl mx-auto px-4 text-center text-[11px] text-slate-500 mono">
+      Trust Protocol Forensics Engine • Modular PKI, Rust Core, AI Detection & Hardware Attestation
+    </div>
+  </footer>
+
+  <script>
+    const scenarioMap = {
+      authentic: {
+        bannerClass: "mt-5 flex items-start gap-3 rounded-lg border border-emerald-800 bg-emerald-950/70 p-4",
+        iconClass: "flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/15 text-sm font-bold text-emerald-300",
+        iconText: "✓",
+        titleClass: "text-sm font-semibold text-emerald-300",
+        title: "Integrity & provenance verified",
+        descClass: "mt-1 text-xs text-emerald-400/80",
+        description: "Manifest valid. Provenance chain verified against the configured trust root.",
+        metricHardware: "ECDSA_P256 (Camera #4829)",
+        manifestClass: "mt-1 text-xs font-semibold text-emerald-400 mono",
+        manifestText: "VALID (SHA256 match)",
+        pkiClass: "mt-1 text-xs font-semibold text-emerald-400 mono",
+        pkiText: "ACTIVE (Not revoked)",
+        aiClass: "mt-1 text-xs font-semibold text-emerald-400 mono",
+        aiText: "3.2% synthetic score",
+        json: {
+          asset_id: "asset_img_2026_0911_x89.jpg",
+          status: "VERIFIED",
+          c2pa_parsed: true,
+          hash_valid: true,
+          dlt_revocation_check: "PASSED",
+          ai_synthetic_probability: 0.032
+        }
+      },
+      ai_manipulated: {
+        bannerClass: "mt-5 flex items-start gap-3 rounded-lg border border-amber-800 bg-amber-950/70 p-4",
+        iconClass: "flex h-6 w-6 items-center justify-center rounded-full bg-amber-500/15 text-sm font-bold text-amber-300",
+        iconText: "!",
+        titleClass: "text-sm font-semibold text-amber-300",
+        title: "AI manipulation artifacts detected",
+        descClass: "mt-1 text-xs text-amber-400/80",
+        description: "Signature remains valid, but forensic analysis indicates a high probability of synthetic generation.",
+        metricHardware: "ECDSA_P256 (Camera #4829)",
+        manifestClass: "mt-1 text-xs font-semibold text-emerald-400 mono",
+        manifestText: "VALID (SHA256 match)",
+        pkiClass: "mt-1 text-xs font-semibold text-emerald-400 mono",
+        pkiText: "ACTIVE (Not revoked)",
+        aiClass: "mt-1 text-xs font-semibold text-amber-400 mono",
+        aiText: "94.8% synthetic score (FLAGGED)",
+        json: {
+          asset_id: "asset_img_2026_0911_x89.jpg",
+          status: "SUSPICIOUS_AI_GENERATED",
+          c2pa_parsed: true,
+          hash_valid: true,
+          dlt_revocation_check: "PASSED",
+          ai_synthetic_probability: 0.948
+        }
+      },
+      revoked_cert: {
+        bannerClass: "mt-5 flex items-start gap-3 rounded-lg border border-rose-800 bg-rose-950/70 p-4",
+        iconClass: "flex h-6 w-6 items-center justify-center rounded-full bg-rose-500/15 text-sm font-bold text-rose-300",
+        iconText: "✕",
+        titleClass: "text-sm font-semibold text-rose-300",
+        title: "Certificate revoked",
+        descClass: "mt-1 text-xs text-rose-400/80",
+        description: "The signing certificate serial number is present in the revocation ledger and must not be trusted.",
+        metricHardware: "UNTRUSTED_KEY",
+        manifestClass: "mt-1 text-xs font-semibold text-emerald-400 mono",
+        manifestText: "VALID",
+        pkiClass: "mt-1 text-xs font-semibold text-rose-400 mono",
+        pkiText: "REVOKED (DLT list)",
+        aiClass: "mt-1 text-xs font-semibold text-slate-400 mono",
+        aiText: "N/A",
+        json: {
+          asset_id: "asset_img_2026_0911_x89.jpg",
+          status: "REVOKED_CERTIFICATE",
+          c2pa_parsed: true,
+          hash_valid: true,
+          dlt_revocation_check: "FAILED_REVOKED",
+          ai_synthetic_probability: 0.01
+        }
+      },
+      corrupted_manifest: {
+        bannerClass: "mt-5 flex items-start gap-3 rounded-lg border border-rose-800 bg-rose-950/70 p-4",
+        iconClass: "flex h-6 w-6 items-center justify-center rounded-full bg-rose-500/15 text-sm font-bold text-rose-300",
+        iconText: "✕",
+        titleClass: "text-sm font-semibold text-rose-300",
+        title: "Manifest hash mismatch",
+        descClass: "mt-1 text-xs text-rose-400/80",
+        description: "Manifest parsing detected binary modification or a hash mismatch against the signing envelope.",
+        metricHardware: "UNKNOWN",
+        manifestClass: "mt-1 text-xs font-semibold text-rose-400 mono",
+        manifestText: "CORRUPTED / HASH_MISMATCH",
+        pkiClass: "mt-1 text-xs font-semibold text-slate-400 mono",
+        pkiText: "SKIPPED",
+        aiClass: "mt-1 text-xs font-semibold text-slate-400 mono",
+        aiText: "SKIPPED",
+        json: {
+          asset_id: "asset_img_2026_0911_x89.jpg",
+          status: "MANIFEST_TAMPERED",
+          c2pa_parsed: false,
+          hash_valid: false,
+          dlt_revocation_check: "NOT_RUN",
+          ai_synthetic_probability: null
+        }
+      }
+    };
+
+    function applyScenario(scenarioKey) {
+      const scenario = scenarioMap[scenarioKey];
+      if (!scenario) return;
+
+      const statusBanner = document.getElementById("status-banner");
+      const statusIcon = document.getElementById("status-icon");
+      const statusTitle = document.getElementById("status-title");
+      const statusDesc = document.getElementById("status-description");
+      const metricHardware = document.getElementById("metric-hardware");
+      const metricManifest = document.getElementById("metric-manifest");
+      const metricPki = document.getElementById("metric-pki");
+      const metricAi = document.getElementById("metric-ai");
+      const jsonConsole = document.getElementById("json-console");
+      const validationTime = document.getElementById("validation-time");
+
+      statusBanner.className = scenario.bannerClass;
+      statusIcon.className = scenario.iconClass;
+      statusIcon.textContent = scenario.iconText;
+      statusTitle.className = scenario.titleClass;
+      statusTitle.textContent = scenario.title;
+      statusDesc.className = scenario.descClass;
+      statusDesc.textContent = scenario.description;
+
+      metricHardware.textContent = scenario.metricHardware;
+      metricManifest.className = scenario.manifestClass;
+      metricManifest.textContent = scenario.manifestText;
+      metricPki.className = scenario.pkiClass;
+      metricPki.textContent = scenario.pkiText;
+      metricAi.className = scenario.aiClass;
+      metricAi.textContent = scenario.aiText;
+
+      jsonConsole.textContent = JSON.stringify(scenario.json, null, 2);
+
+      validationTime.textContent = "Simulierte Laufzeit: 48.5 ms";
+      jsonConsole.textContent = JSON.stringify({ simulation: true, ...scenario.json }, null, 2);
+    }
+
+    document.getElementById("btn-run-simulation").addEventListener("click", () => {
+      const value = document.getElementById("test-scenario").value;
+      applyScenario(value);
+    });
+
+    applyScenario("authentic");
+  </script>
+</body>
+</html>
