@@ -3,8 +3,28 @@ name: Workspace runtime
 on:
   push:
     branches: [main]
+    paths:
+      - ".github/workflows/workspace.yml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
+      - "package-lock.json"
+      - "apps/**"
+      - "scripts/**"
+      - "test/**"
+      - "web/**"
   pull_request:
     branches: [main]
+    paths:
+      - ".github/workflows/workspace.yml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
+      - "package-lock.json"
+      - "apps/**"
+      - "scripts/**"
+      - "test/**"
+      - "web/**"
   workflow_dispatch:
 
 permissions:
@@ -41,9 +61,13 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
           push: false
           load: true
-          tags: trust-workspace:ci
+          tags: trust-workspace:ci-${{ github.sha }}
+          build-args: |
+            TARGETARCH=amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -60,7 +84,7 @@ jobs:
             -p 127.0.0.1:3000:3000 \
             -e JWT_SECRET \
             -e PUBLIC_ORIGIN=http://127.0.0.1:3000 \
-            trust-workspace:ci
+            trust-workspace:ci-${{ github.sha }}
           unset JWT_SECRET
           ready=false
           for attempt in $(seq 1 30); do
