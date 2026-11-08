@@ -17,12 +17,13 @@ RUN npm run build && npm prune --omit=dev
 FROM node:22-trixie-slim
 WORKDIR /app
 ENV NODE_ENV=production
-RUN apt-get update && apt-get install -y --no-install-recommends gosu ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends gosu ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=c2pa-builder /opt/c2patool/c2patool /usr/local/bin/c2patool
 RUN c2patool --version
 COPY --from=build --chown=node:node /app /app
 RUN mkdir -p /app/data && chown node:node /app/data
 RUN chmod +x /app/scripts/docker-entrypoint.sh
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 CMD ["/bin/sh", "-ec", "response=$(mktemp); trap 'rm -f \"$response\"' EXIT; curl --fail --silent --show-error --connect-timeout 2 --max-time 3 http://127.0.0.1:3000/health --output \"$response\"; node -e 'const h=JSON.parse(require(\"node:fs\").readFileSync(process.argv[1],\"utf8\")); if(h.status!==\"ok\"||h.apiConfigured!==true||h.c2pa?.available!==true) process.exit(1);' \"$response\""]
 ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 EXPOSE 3000
 CMD ["npm", "start"]
