@@ -20,7 +20,7 @@
  *   -> token present
  *   -> messageImprint == digest(the signature bytes)      <- binds token to THESE bytes
  *   -> signed message-digest == digest(TSTInfo)
- *   -> CMS signature holds over the signedAttrs in SET OF form
+ *   -> CMS signature holds over the signed attributes in SET OF form
  *   -> the key used is one the CALLER supplied
  *
  * Each failure returns the STEP that blocked, never a bare false.
@@ -231,6 +231,8 @@ const SIGNATURE_ALGORITHMS = {
   "1.2.840.113549.1.1.13": { name: "RSASSA-PKCS1-v1_5", hash: "SHA-512" },
 };
 
+const ECDSA_CURVES = ["P-256", "P-384", "P-521"];
+
 /** An X.509 certificate is NOT a SubjectPublicKeyInfo, and WebCrypto's "spki"
  *  import wants the latter. This reads the SPKI out of a certificate so a caller
  *  can pin the TSA it trusts:  tsaPublicKey: spkiFromCertificate(trustedCertDer).
@@ -329,6 +331,16 @@ export async function verifyTimestampResponse(responseBytes, options = {}) {
   const signer = parseSignerInfo(tokenBytes, parsed);
   if (!signer.ok) return { trusted: false, at: parsed.genTime, step: "signerinfo", reason: signer.reason };
 
+  /* rsaEncryption identifies an RSA key, not a signature operation. A token
+   * that declares it as the signature algorithm does not say which digest was
+   * used, so it cannot be verified safely; fail closed with the precise reason. */
+  if (signer.signatureAlgorithm === "1.2.840.113549.1.1.1") {
+    return {
+      trusted: false, at: parsed.genTime, step: "algorithm",
+      reason: "rsaEncryption is a key-transport algorithm, not a signature algorithm; the token must declare sha256WithRSAEncryption or an equivalent signed-algorithm OID",
+    };
+  }
+
   const spec = SIGNATURE_ALGORITHMS[signer.signatureAlgorithm];
   if (!spec) return { trusted: false, at: parsed.genTime, step: "algorithm", reason: "unsupported signature algorithm " + signer.signatureAlgorithm };
 
@@ -361,13 +373,31 @@ export async function verifyTimestampResponse(responseBytes, options = {}) {
     };
   }
 
-  let key;
-  try {
-    key = await subtle.importKey("spki", tsPublicKey, { name: spec.name, namedCurve: spec.name === "ECDSA" ? "P-256" : undefined, hash: spec.hash }, false, ["verify"]);
-  } catch (err) {
+  /* ECDSA verification needs the curve of the supplied key, which the SPKI
+   * does not state in a form WebCrypto accepts directly. Try the supported
+   * curves in order; a wrong curve fails import, never verification. */
+  let key = null;
+  let keyError = null;
+  if (spec.name === "ECDSA") {
+    for (const curve of ECDSA_CURVES) {
+      try {
+        key = await subtle.importKey("spki", tsPublicKey, { name: spec.name, namedCurve: curve, hash: spec.hash }, false, ["verify"]);
+        break;
+      } catch (err) {
+        keyError = err;
+      }
+    }
+  } else {
+    try {
+      key = await subtle.importKey("spki", tsPublicKey, { name: spec.name, hash: spec.hash }, false, ["verify"]);
+    } catch (err) {
+      keyError = err;
+    }
+  }
+  if (!key) {
     return {
       trusted: false, at: parsed.genTime, step: "tsa-key",
-      reason: "the TSA key did not import: " + (err && err.message || String(err)),
+      reason: "the TSA key did not import: " + (keyError && keyError.message || String(keyError)),
       imprintVerified: true,
     };
   }
