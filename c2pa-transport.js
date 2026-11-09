@@ -254,7 +254,10 @@ export async function buildChain(certificates, trustAnchors, referenceTime) {
   /* The terminal certificate must sign itself for the chain to be rooted. */
   const rootRes = await verifyCertificateSignature(root.tbsBytes, root.signature, root.spki, root.signatureAlgorithm);
   if (!rootRes.ok) {
-    return { ok: false, reason: "the terminal certificate is not self-signed: " + rootRes.reason };
+    return {
+      ok: false,
+      reason: "the terminal certificate is not self-signed; a trust list cannot substitute for a valid self-signature: " + rootRes.reason,
+    };
   }
 
   if (trustAnchors && trustAnchors.length > 0) {

@@ -87,7 +87,9 @@ npm run build
 npm run test:runtime
 ```
 
-`npm run test:ci` führt alle diese Prüfungen sowie die zusätzlichen X.509-, C2PA- und Policy-Suites aus.
+`npm test` führt sämtliche Protokoll-Suites einschließlich X.509, C2PA und Policies aus.
+`npm run test:ci` ergänzt Verifier-, lokale Integritäts-, Build- und Laufzeitprüfungen.
+Der Abgleich des X.509-Reparatur-Snapshots ist unter [X.509-Konsolidierung](docs/X509-CONSOLIDATION.md) dokumentiert.
 
 ## Ursprüngliches Produktkonzept
 

@@ -65,7 +65,7 @@ const utc = (s) => tlv(0x17, new TextEncoder().encode(s));
 const name = (cn) => seq(set(seq(oid("2.5.4.3"), tlv(0x0c, new TextEncoder().encode(cn)))));
 
 /* P-256, because that is the curve the COSE profile uses. */
-const EC_ALG = () => seq(oid("1.2.840.10045.2.1"), oid("1.2.840.10045.3.1.1"));
+const EC_ALG = () => seq(oid("1.2.840.10045.2.1"), oid("1.2.840.10045.3.1.7"));
 const ECDSA_SHA256 = () => seq(oid("1.2.840.10045.4.3.2"));
 
 /** Convert a WebCrypto IEEE P1363 signature into the DER SEQUENCE X.509 uses. */
@@ -202,6 +202,7 @@ const check = (label, got, want) => {
   check("the signature is retained", p.signature.length > 0, true);
   check("the signature algorithm is read", p.signatureAlgorithm, "1.2.840.10045.4.3.2");
   check("the full SPKI is retained", p.spki[0], 0x30);
+  check("the SPKI carries the standard P-256 algorithm identifier", Buffer.from(p.spki).includes(Buffer.from(EC_ALG())), true);
 }
 
 /* 2 — chain building, now proven by signature */
@@ -229,6 +230,13 @@ const check = (label, got, want) => {
   const forged = await buildChain([leaf, impostorIntermediate, root], ["Example Root CA"], now);
   check("an impostor with matching names is refused", forged.ok, false);
   check("and the reason names the signature", forged.reason.indexOf("does not verify against its issuer") >= 0, true);
+
+  const missingRoot = await buildChain([leaf, intermediate], ["Example Intermediate"], now);
+  check("a listed intermediate cannot replace the missing self-signed root", missingRoot.ok, false);
+  check("the failure explains why the trust list cannot substitute", /trust list cannot substitute/.test(missingRoot.reason), true);
+
+  const unanchoredMissingRoot = await buildChain([leaf, intermediate], [], now);
+  check("the missing root is also refused without a trust list", unanchoredMissingRoot.ok, false);
 }
 
 /* 3 — CRL, by value */

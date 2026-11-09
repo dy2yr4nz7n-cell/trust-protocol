@@ -19,9 +19,9 @@
     "build": "node scripts/build.mjs",
     "test:runtime": "node --test test/*.test.mjs",
     "test:verifier": "npm test --workspace apps/verifier",
-    "test:ci": "npm test && npm run test:all && node x509-parser.test.mjs && node c2pa-verifier.test.mjs && node policy-fingerprint.test.mjs && npm run test:verifier && npm run test:local && npm run build && npm run test:runtime",
-    "test": "node conformance.mjs && node derivation.test.mjs && node signature.test.mjs && node fingerprint.test.mjs && node c2pa-integration.test.mjs",
-    "test:core": "npm test",
+    "test:ci": "npm test && npm run test:verifier && npm run test:local && npm run build && npm run test:runtime",
+    "test": "npm run test:core && node c2pa-verifier.test.mjs && node c2pa-integration.test.mjs && node x509-parser.test.mjs && npm run test:all",
+    "test:core": "node conformance.mjs && node derivation.test.mjs && node signature.test.mjs && node fingerprint.test.mjs && node policy-fingerprint.test.mjs",
     "test:all": "node c2pa-tsr.test.mjs && node c2pa-providers.test.mjs && node c2pa-transport.test.mjs",
     "demo": "python3 -m http.server 8000",
     "bench": "vitest bench --run"

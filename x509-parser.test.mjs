@@ -79,8 +79,8 @@ function encodeOid(dotted) {
   return tlv(0x06, Uint8Array.from(bytes));
 }
 
-function attribute(oidDotted, value, tag) {
-  return tlv(0x31, tlv(0x30, cat(encodeOid(oidDotted), tlv(tag ?? 0x0c, new TextEncoder().encode(value)))));
+function attribute(oidDotted, value, tag, rdnTag = 0x31) {
+  return tlv(rdnTag, tlv(0x30, cat(encodeOid(oidDotted), tlv(tag ?? 0x0c, new TextEncoder().encode(value)))));
 }
 
 function name(...attributes) {
@@ -113,23 +113,22 @@ async function mintCert({
   notBefore = "260101000000Z",
   notAfter = "261231235959Z",
   stringTag = 0x0c,
+  rdnTag = 0x31,
 } = {}) {
   const kp = keyPair || (await subtle.generateKey({ name: "ECDSA", namedCurve: curve }, true, ["sign", "verify"]));
   const signer = issuerKeyPair || kp;
 
   const subject = name(
-    attribute("2.5.4.6", subjectC, stringTag),
-    attribute("2.5.4.10", subjectO, stringTag),
-    attribute("2.5.4.3", subjectCN, stringTag)
+    attribute("2.5.4.6", subjectC, stringTag, rdnTag),
+    attribute("2.5.4.10", subjectO, stringTag, rdnTag),
+    attribute("2.5.4.3", subjectCN, stringTag, rdnTag)
   );
   const issuer = name(
-    attribute("2.5.4.6", issuerC || subjectC, stringTag),
-    attribute("2.5.4.10", issuerO || subjectO, stringTag),
-    attribute("2.5.4.3", issuerCN || subjectCN, stringTag)
+    attribute("2.5.4.6", issuerC || subjectC, stringTag, rdnTag),
+    attribute("2.5.4.10", issuerO || subjectO, stringTag, rdnTag),
+    attribute("2.5.4.3", issuerCN || subjectCN, stringTag, rdnTag)
   );
 
-  const curveOid = { "P-256": OID.prime256v1, "P-384": OID.secp384r1, "P-521": OID.secp521r1 }[curve];
-  const algorithm = tlv(0x30, cat(encodeOid(OID.ecPublicKey), encodeOid(curveOid)));
   const sigAlg = tlv(0x30, encodeOid(OID.ecdsaWithSHA256));
   const spki = new Uint8Array(await subtle.exportKey("spki", kp.publicKey));
 
@@ -183,6 +182,13 @@ await test("subject and issuer DNs are decoded", async () => {
   assert.match(subject, /CN=Test Signer/);
   assert.match(subject, /O=TRUST Test CA/);
   assert.match(subject, /C=DE/);
+});
+
+await test("an RDN encoded as SEQUENCE instead of SET is refused", async () => {
+  const { der } = await mintCert({ rdnTag: 0x30 });
+  const parsed = parseX509Certificate(der);
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.reason, /expected SET/);
 });
 
 await test("tbsBytes carry the SEQUENCE header, not just the value", async () => {

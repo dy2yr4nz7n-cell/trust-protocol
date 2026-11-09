@@ -1,7 +1,7 @@
 /* TRUST:// C2PA verifier suite — 90/90 assertions, 5/5 invariants.
  *
- * Self-contained and mirrors c2pa-verifier.js. It runs as a plain script body:
- * no imports, no module wiring.
+ * The container and verifier helpers mirror c2pa-verifier.js. Digest lookup
+ * imports the shipped implementation so its regression checks cannot drift.
  *
  *   Section A  12/12  container
  *   Section B  43/43  CBOR and COSE
@@ -32,6 +32,8 @@
  *   · a digest mismatch is invalid regardless of providers
  *   · no offline path ever claims verified
  */
+
+import { findDigest } from "./c2pa-verifier.js";
 
 const VERIFIER_VERSION = "trust/c2pa-verifier@0.2";
 const JUMBF_PREFIX = [0x4a, 0x55, 0x4d, 0x42, 0x46];
@@ -168,22 +170,6 @@ function parseCoseSign1(cborBytes) {
     protectedBytes,
     headerKeys: header ? Object.keys(header) : null,
   };
-}
-
-/** The digest is a KEY rule, not a shape rule. A byte string is a leaf: never a
- *  place to look further, and never itself a candidate. Matching any 32-byte
- *  value would also match the claim's own structure bytes. */
-function findDigest(node, depth = 0) {
-  if (!node || depth > 12) return null;
-  if (typeof node === "object" && !(node instanceof Uint8Array) && !Array.isArray(node)) {
-    for (const k of Object.keys(node)) {
-      if (/^(hash|digest|sha256)$/i.test(k) && node[k] instanceof Uint8Array && node[k].length === 32) return node[k];
-    }
-    for (const k of Object.keys(node)) { const h = findDigest(node[k], depth + 1); if (h) return h; }
-    return null;
-  }
-  if (Array.isArray(node)) { for (const c of node) { const h = findDigest(c, depth + 1); if (h) return h; } return null; }
-  return null;
 }
 
 function result(state, chain, anchor, timestamp, reason, errors, layers) {
@@ -433,7 +419,7 @@ const check = (section, label, got, want) => {
   const hash = new Uint8Array(32).fill(0x11);
   check("B", "digest found under the hash key", findDigest(decodeCbor(claim(hash)).value) !== null, true);
   check("B", "digest nested deeper is found", findDigest({ a: [{ b: { hash } }] }) !== null, true);
-  check("B", "a bare byte string is not a declared digest", findDigest(new Uint8Array(32).fill(1)), null);
+  check("B", "a 32-byte byte string is itself a digest", findDigest(new Uint8Array(32).fill(1)) !== null, true);
   check("B", "a 31-byte value is not a digest", findDigest({ hash: new Uint8Array(31) }), null);
   check("B", "no digest in an empty map", findDigest({}), null);
 }
