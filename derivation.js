@@ -29,6 +29,8 @@
 
 export const SPEC_VERSION = "TRUST-Record/0.2";
 
+export const MAX_DERIVATION_DEPTH = 32;
+
 export async function sha256Hex(bytes) {
   const d = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -71,33 +73,99 @@ export function createTrustStore() {
   };
 }
 
-/* Resolve `subject.derived_from` against a verifier's own records. A parent
- * counts as proven only when the stored record for it has origin "verified". */
-export function resolveDerivation(subject, store) {
-  const parents = Array.isArray(subject?.derived_from) ? subject.derived_from : [];
-  if (parents.length === 0) {
-    return { linked: false, parents: [], signed_parent: false, note: "no derivation recorded" };
+function isSha256Hex(value) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+}
+
+/* Resolve `subject.derived_from` against a verifier's own records.
+ *
+ * A parent counts as proven only when its stored record has origin
+ * "verified". The traversal is bounded and acyclic: a hash may occur only
+ * once on a lineage path, and a chain may not exceed MAX_DERIVATION_DEPTH
+ * records. A cycle or excessive depth is a validation failure, not a
+ * provenance inheritance.
+ */
+export function resolveDerivation(subject, store, options = {}) {
+  const maxDepth = Number.isInteger(options.maxDepth) && options.maxDepth > 0
+    ? options.maxDepth
+    : MAX_DERIVATION_DEPTH;
+
+  const rawParents = Array.isArray(subject?.derived_from) ? subject.derived_from : [];
+  if (rawParents.length === 0) {
+    return {
+      linked: false,
+      parents: [],
+      signed_parent: false,
+      cyclic: false,
+      tooDeep: false,
+      resolvable: null,
+      note: "no derivation recorded",
+    };
   }
 
-  const resolved = parents.map((hash) => {
-    const rec = store?.get(hash) ?? null;
-    return {
-      hash,
-      known: Boolean(rec),
-      origin: rec?.origin ?? null,
-      integrity: rec?.integrity ?? null,
-      verdict: rec?.verdict ?? null,
-    };
-  });
+  const rootHash = typeof subject?.content_hash === "string" ? subject.content_hash.toLowerCase() : null;
+  const visited = new Set();
+  if (rootHash) visited.add(rootHash);
 
-  const proven = resolved.filter((r) => r.known && r.origin === "verified");
+  const parents = [];
+  let cyclic = false;
+  let tooDeep = false;
+
+  const visit = (hash, depth) => {
+    if (!isSha256Hex(hash)) {
+      parents.push({ hash, known: false, origin: null, integrity: null, verdict: null, cycle: false, depth });
+      return;
+    }
+
+    const key = hash.toLowerCase();
+    if (visited.has(key)) {
+      cyclic = true;
+      parents.push({ hash: key, known: false, origin: null, integrity: null, verdict: null, cycle: true, depth });
+      return;
+    }
+
+    if (depth > maxDepth) {
+      tooDeep = true;
+      parents.push({ hash: key, known: false, origin: null, integrity: null, verdict: null, cycle: false, depth });
+      return;
+    }
+
+    visited.add(key);
+    const record = store?.get(key) ?? null;
+    parents.push({
+      hash: key,
+      known: Boolean(record),
+      origin: record?.origin ?? null,
+      integrity: record?.integrity ?? null,
+      verdict: record?.verdict ?? null,
+      cycle: false,
+      depth,
+    });
+
+    const nextParents = Array.isArray(record?.subject?.derived_from) ? record.subject.derived_from : [];
+    for (const parent of nextParents) visit(parent, depth + 1);
+  };
+
+  for (const parent of rawParents) visit(parent, 1);
+
+  const validParents = parents.filter((parent) => isSha256Hex(parent.hash) && !parent.cycle);
+  const proven = validParents.filter((parent) => parent.known && parent.origin === "verified");
+  const resolvable = !cyclic && !tooDeep && proven.length > 0;
+
+  let note;
+  if (cyclic) note = "derivation chain contains a cycle";
+  else if (tooDeep) note = `derivation chain exceeds the maximum depth of ${maxDepth}`;
+  else if (proven.length > 0) note = "links to a source whose origin was proven";
+  else note = "links to a source with no proven origin";
+
   return {
     linked: true,
-    parents: resolved,
+    parents,
     signed_parent: proven.length > 0,
-    note: proven.length > 0
-      ? "links to a source whose origin was proven"
-      : "links to a source with no proven origin",
+    cyclic,
+    tooDeep,
+    resolvable,
+    note,
   };
 }
 
@@ -126,7 +194,12 @@ export function deriveIntegrityAxis(evidence, computedHash, subject, store) {
   const withHash = b.attestations.filter((a) => typeof a.content_hash === "string" && a.content_hash.length === 64);
 
   if (withHash.length === 0) {
-    return { value: "intact", derivation, reason: "no content hash attested, so nothing can contradict", resolvable: null };
+    return {
+      value: "intact",
+      derivation,
+      reason: "no content hash attested, so nothing can contradict",
+      resolvable: null,
+    };
   }
 
   const matches = withHash.filter((a) => computedHash && a.content_hash.toLowerCase() === computedHash.toLowerCase());
@@ -134,27 +207,64 @@ export function deriveIntegrityAxis(evidence, computedHash, subject, store) {
   const broken = withHash.filter((a) => a.state === "invalid" || a.chain === "unavailable" || a.chain === "expired");
 
   if (matches.length && others.length) {
-    return { value: "broken", derivation, reason: "attestations contradict each other", resolvable: false };
+    return {
+      value: "broken",
+      derivation,
+      reason: "attestations contradict each other",
+      resolvable: false,
+    };
   }
+
   if (broken.length === withHash.length) {
-    return { value: "broken", derivation, reason: "no attestation resolved to a verified chain", resolvable: false };
+    return {
+      value: "broken",
+      derivation,
+      reason: "no attestation resolved to a verified chain",
+      resolvable: false,
+    };
   }
+
   if (matches.length) {
-    return { value: "intact", derivation, reason: "hash matches the attested value", resolvable: null };
+    return {
+      value: "intact",
+      derivation,
+      reason: "hash matches the attested value",
+      resolvable: null,
+    };
   }
 
   /* The hash does not match. Only now does derivation matter: a declared,
-   * resolvable lineage is what separates "derived" from "tampered with". */
+   * acyclic and bounded lineage is what separates a derived asset from an
+   * unexplained modification. */
+  if (derivation.cyclic) {
+    return {
+      value: "modified",
+      derivation,
+      resolvable: false,
+      reason: "derivation chain contains a cycle and cannot establish a lineage",
+    };
+  }
+
+  if (derivation.tooDeep) {
+    return {
+      value: "modified",
+      derivation,
+      resolvable: false,
+      reason: `derivation chain exceeds the maximum depth of ${MAX_DERIVATION_DEPTH}`,
+    };
+  }
+
   if (derivation.linked) {
     return {
       value: "modified",
       derivation,
-      resolvable: true,
+      resolvable: derivation.resolvable,
       reason: derivation.signed_parent
         ? "bytes differ from the signed source, but a recorded derivation link to a proven-origin source resolves"
         : "bytes differ from the signed source; a derivation link is recorded but its source has no proven origin",
     };
   }
+
   return {
     value: "modified",
     derivation,
@@ -184,6 +294,7 @@ export function deriveGenerationAxis(evidence) {
       sources: [...new Set(signing.map((a) => a.label ?? a.id ?? "unnamed attestation"))],
     };
   }
+
   if (b.claims.length) {
     return {
       value: "asserted",
@@ -194,6 +305,7 @@ export function deriveGenerationAxis(evidence) {
         .map((c) => ({ source: c.source ?? "unknown", confidence: c.confidence })),
     };
   }
+
   return { value: "none", kinds: [], sources: [] };
 }
 

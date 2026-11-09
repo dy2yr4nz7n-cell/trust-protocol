@@ -196,6 +196,34 @@ const orphan = pipeline({
 check("4 orphan   no link recorded", orphan.derivation.linked, false);
 check("4 orphan   not resolvable", orphan.resolvable, false);
 
+/* 5 — cycle guard and max-depth checks against derivation.js */
+import { resolveDerivation as resolveBoundedDerivation, deriveIntegrityAxis, MAX_DERIVATION_DEPTH } from "./derivation.js";
+const H_CYCLE_A = await sha256Hex(enc("cycle-node-a"));
+const H_CYCLE_B = await sha256Hex(enc("cycle-node-b"));
+const cycleStore = createTrustStore();
+cycleStore.store({ content_hash: H_CYCLE_A, origin: "verified", integrity: { value: "intact" }, verdict: "VERIFIED", subject: { content_hash: H_CYCLE_A, derived_from: [H_CYCLE_B] } });
+cycleStore.store({ content_hash: H_CYCLE_B, origin: "verified", integrity: { value: "intact" }, verdict: "VERIFIED", subject: { content_hash: H_CYCLE_B, derived_from: [H_CYCLE_A] } });
+
+const selfCycle = resolveBoundedDerivation({ content_hash: H_CYCLE_A, derived_from: [H_CYCLE_A] }, cycleStore);
+check("5 cycle    self-cycle detected", selfCycle.cyclic, true);
+check("5 cycle    self-cycle not resolvable", selfCycle.resolvable, false);
+
+const twoNodeCycle = deriveIntegrityAxis(
+  [att({ content_hash: H_ORIG })],
+  H_CYCLE_A,
+  { content_hash: H_CYCLE_A, derived_from: [H_CYCLE_B] },
+  cycleStore
+);
+check("5 cycle    two-node cycle rejected", twoNodeCycle.resolvable, false);
+
+const deepResult = resolveBoundedDerivation(
+  { content_hash: H_EDIT, derived_from: [H_ORIG] },
+  store,
+  { maxDepth: 1 }
+);
+check("5 depth    within depth limit", deepResult.tooDeep, false);
+check("5 depth    max depth exported", MAX_DERIVATION_DEPTH, 32);
+
 const inv = {
   "derivation moves only integrity": capture.origin === edited.origin,
   "derivation never grants origin": borrowed.origin === "none",
