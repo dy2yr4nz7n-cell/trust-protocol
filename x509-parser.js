@@ -82,6 +82,12 @@ class DerParser {
     return new DerParser(tlv.value);
   }
 
+  readSet() {
+    const tlv = this.readTlv();
+    if (tlv.tag !== 0x31) throw new Error("DER: expected SET");
+    return new DerParser(tlv.value);
+  }
+
   readOid() {
     const tlv = this.readTlv();
     if (tlv.tag !== 0x06) throw new Error("DER: expected OID");
@@ -305,9 +311,7 @@ function parseName(nameParser) {
 
   while (!nameParser.isEof()) {
     const rdn = [];
-    const rdnSet = nameParser.readTlv();
-    if (rdnSet.tag !== 0x31) throw new Error("DER: expected RDN SET");
-    const rdnParser = new DerParser(rdnSet.value);
+    const rdnParser = nameParser.readSet();
 
     while (!rdnParser.isEof()) {
       const attr = rdnParser.readSequence();
