@@ -47,7 +47,10 @@ export async function hashString(str) {
  *                     carried INSIDE the signed payload. This is what makes
  *                     it attested_by_signer rather than asserted.
  *
- * assertion         a provenance claim with no cryptographic binding.
+ * assertion         a provenance claim with an OPTIONAL integrity binding.
+ *                     binding: { algorithm: "SHA-256", digest: string }
+ *                     A verified binding proves that these assertion bytes
+ *                     are unchanged; it does NOT prove who made the claim.
  * generation_claim  an authorship claim with no cryptographic binding.
  *                     generation_kind: a C2PA digitalSourceType string
  *                     source: who says so
@@ -72,6 +75,45 @@ function classifyEvidence(evidence) {
     assertions: list.filter((e) => e && e.kind === "assertion"),
     claims: list.filter((e) => e && e.kind === "generation_claim"),
     absences: list.filter((e) => e && e.kind === "absence"),
+  };
+}
+
+/** Canonical payload covered by an assertion binding. The binding itself is
+ *  excluded, so a caller cannot alter the claim and keep the same digest. */
+export function canonicalAssertionPayload(assertion) {
+  if (!assertion || assertion.kind !== "assertion") return null;
+  const payload = {};
+  for (const key of ["id", "label", "source", "issued_at", "data"]) {
+    if (assertion[key] !== undefined) payload[key] = assertion[key];
+  }
+  const keys = Object.keys(payload).sort();
+  const stable = {};
+  for (const key of keys) stable[key] = payload[key];
+  return JSON.stringify(stable);
+}
+
+/** Verify the optional integrity binding of an assertion. This establishes
+ *  only that the assertion payload matches its declared digest; it never
+ *  establishes the truth of the claim or the identity of its author. */
+export async function verifyAssertionBinding(assertion) {
+  const binding = assertion && assertion.binding;
+  if (!binding || typeof binding !== "object") {
+    return { verified: false, reason: "no binding was supplied" };
+  }
+  if (binding.algorithm !== "SHA-256") {
+    return { verified: false, reason: "unsupported binding algorithm: " + binding.algorithm };
+  }
+  if (typeof binding.digest !== "string" || binding.digest.length !== 64) {
+    return { verified: false, reason: "the binding digest is not a SHA-256 hex digest" };
+  }
+  const payload = canonicalAssertionPayload(assertion);
+  if (payload === null) return { verified: false, reason: "the evidence is not an assertion" };
+  const computed = await hashString(payload);
+  return {
+    verified: computed === binding.digest.toLowerCase(),
+    reason: computed === binding.digest.toLowerCase()
+      ? "the assertion payload matches its declared SHA-256 binding"
+      : "the assertion payload does not match its declared SHA-256 binding",
   };
 }
 
@@ -202,6 +244,7 @@ export function deriveRecord(input) {
   const integrity = deriveIntegrity(ev, computedHash);
   const generation = deriveGeneration(input.evidence);
   const authenticated = isAuthenticated(input.evidence);
+  const bindingResults = input._bindingVerified || {};
 
   let status = GRID[`${origin.value}|${integrity.value}`] ?? "UNKNOWN";
   if (authenticated && status === "VERIFIED") status = "AUTHENTICATED";
@@ -216,7 +259,7 @@ export function deriveRecord(input) {
     integrity: integrity.value,
     authenticated,
     generation: generation.value,
-    evidence: ev.list.map((e) => {
+    evidence: ev.list.map((e, index) => {
       const out = { kind: e.kind };
       if (e.id) out.id = e.id;
       if (e.label) out.label = e.label;
@@ -225,6 +268,17 @@ export function deriveRecord(input) {
         out.chain = e.chain ?? "unavailable";
         if (e.content_hash) out.content_hash = e.content_hash;
         if (e.generation) out.generation = e.generation;
+      }
+      if (e.kind === "assertion") {
+        if (e.binding) {
+          const verified = bindingResults[e.id ?? index];
+          out.binding = {
+            algorithm: e.binding.algorithm ?? null,
+            digest: e.binding.digest ?? null,
+            verified: verified === true,
+          };
+        }
+        if (e.source) out.source = e.source;
       }
       if (e.kind === "generation_claim") {
         if (e.generation_kind) out.generation_kind = e.generation_kind;
@@ -262,7 +316,16 @@ export function deriveRecord(input) {
  * ------------------------------------------------------------------ */
 
 export async function check(input) {
-  const out = deriveRecord(input);
+  const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+  const bindingVerified = {};
+  for (let i = 0; i < evidence.length; i++) {
+    const e = evidence[i];
+    if (e && e.kind === "assertion" && e.binding) {
+      const result = await verifyAssertionBinding(e);
+      bindingVerified[e.id ?? i] = result.verified;
+    }
+  }
+  const out = deriveRecord({ ...input, _bindingVerified: bindingVerified });
   out.record.verdict = { status: out.derivation.status, spec_version: SPEC_VERSION };
   return out;
 }
