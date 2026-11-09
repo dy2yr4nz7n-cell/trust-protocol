@@ -10,8 +10,9 @@
  *                 before anything downstream reads them
  *   3 digest      the claim declares a hash of the ASSET. Compare it against
  *                 the asset bytes — never against the container that carries
- *                 the claim, which differs by construction. The caller names the
- *                 asset range; absent that, the whole input is the asset
+ *                 the claim, which differs by construction. Declared exclusion
+ *                 ranges are removed before hashing; absent ranges mean the
+ *                 whole asset is hashed.
  *   4 signature   INJECTED provider — absent means unknown, never verified
  *   5 chain       INJECTED provider — absent means unknown, never verified
  *   6 timestamp   INJECTED provider — absent means absent
@@ -195,6 +196,77 @@ export function findDigest(node, depth = 0) {
   return null;
 }
 
+/** Collect byte ranges a C2PA hash assertion excludes from the asset digest.
+ *  Accepted shapes are deliberately narrow: { offset, length } and
+ *  { start, end }. Anything else is ignored here and reported by the caller. */
+export function collectExclusionRanges(node, depth = 0, out = []) {
+  if (!node || depth > 12) return out;
+  if (Array.isArray(node)) {
+    for (const child of node) collectExclusionRanges(child, depth + 1, out);
+    return out;
+  }
+  if (typeof node !== "object") return out;
+
+  const offset = Number(node.offset);
+  const length = Number(node.length);
+  if (Number.isInteger(offset) && Number.isInteger(length) && offset >= 0 && length > 0) {
+    out.push([offset, offset + length]);
+  } else {
+    const start = Number(node.start);
+    const end = Number(node.end);
+    if (Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end > start) {
+      out.push([start, end]);
+    }
+  }
+
+  for (const key of Object.keys(node)) collectExclusionRanges(node[key], depth + 1, out);
+  return out;
+}
+
+/** Sort and coalesce ranges so overlapping or adjacent exclusions cannot
+ *  produce a fragmented hash input. */
+export function mergeRanges(ranges) {
+  const sorted = ranges
+    .map((r) => [Math.max(0, Math.floor(r[0])), Math.max(0, Math.floor(r[1]))])
+    .filter((r) => r[1] > r[0])
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out = [];
+  for (const range of sorted) {
+    const last = out[out.length - 1];
+    if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
+    else out.push([...range]);
+  }
+  return out;
+}
+
+/** Remove merged exclusion ranges from a base range. */
+export function subtractRanges(base, exclusions) {
+  const [baseStart, baseEnd] = base;
+  const kept = [];
+  let cursor = baseStart;
+  for (const [start, end] of mergeRanges(exclusions)) {
+    const clippedStart = Math.max(start, baseStart);
+    const clippedEnd = Math.min(end, baseEnd);
+    if (clippedEnd <= clippedStart) continue;
+    if (clippedStart > cursor) kept.push([cursor, clippedStart]);
+    cursor = Math.max(cursor, clippedEnd);
+  }
+  if (cursor < baseEnd) kept.push([cursor, baseEnd]);
+  return kept;
+}
+
+function concatSlices(bytes, ranges) {
+  let size = 0;
+  for (const [start, end] of ranges) size += end - start;
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const [start, end] of ranges) {
+    out.set(bytes.slice(start, end), offset);
+    offset += end - start;
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ *
  * The verifier
  * ------------------------------------------------------------------ */
@@ -230,7 +302,9 @@ export function createC2paVerifier(providers = {}) {
         return result("invalid", "unavailable", null, null, "the COSE protected header carries no certificate chain", ["x5chain is empty"]);
       }
 
-      /* Over the ASSET, not the container. */
+      /* Over the ASSET, not the container. Declared exclusions remove ranges
+       * before hashing; an unusable exclusion set must not silently become a
+       * whole-file hash. */
       let digestVerdict = "unknown";
       let digestNote = "no declared digest could be located in the claim";
       try {
@@ -238,13 +312,27 @@ export function createC2paVerifier(providers = {}) {
         const declared = findDigest(claimNode);
         if (declared) {
           const range = evidence.assetRange;
-          const asset = Array.isArray(range) && range.length === 2 ? u8.slice(range[0], range[1]) : u8;
-          const computed = await sha256Hex(asset);
-          const declaredHex = [...declared].map((b) => b.toString(16).padStart(2, "0")).join("");
-          digestVerdict = declaredHex === computed ? "match" : "mismatch";
-          digestNote = digestVerdict === "match"
-            ? "the asset digest in the claim matches the asset bytes"
-            : "the asset digest in the claim belongs to different bytes";
+          const base = Array.isArray(range) && range.length === 2
+            ? [Math.max(0, Math.floor(range[0])), Math.min(u8.length, Math.floor(range[1]))]
+            : [0, u8.length];
+          const exclusions = mergeRanges(collectExclusionRanges(claimNode));
+          const kept = subtractRanges(base, exclusions);
+          if (exclusions.length && kept.length === 0) {
+            digestVerdict = "unknown";
+            digestNote = "the declared exclusions removed the entire asset range, so no digest could be computed";
+          } else {
+            const asset = kept.length === 1 && kept[0][0] === 0 && kept[0][1] === u8.length
+              ? u8
+              : concatSlices(u8, kept);
+            const computed = await sha256Hex(asset);
+            const declaredHex = [...declared].map((b) => b.toString(16).padStart(2, "0")).join("");
+            digestVerdict = declaredHex === computed ? "match" : "mismatch";
+            digestNote = digestVerdict === "match"
+              ? exclusions.length
+                ? "the asset digest in the claim matches the asset bytes after the declared exclusions"
+                : "the asset digest in the claim matches the asset bytes"
+              : "the asset digest in the claim belongs to different bytes";
+          }
         }
       } catch (err) {
         digestNote = "claim payload could not be decoded for a digest: " + (err && err.message || String(err));
@@ -276,7 +364,8 @@ export function createC2paVerifier(providers = {}) {
       }
 
       let timestamp = null;
-      if (typeof timestampProvider === "function") {
+      if (typeof timestampProvider !== "function") errors.push("no timestamp provider: no timestamp was checked");
+      else {
         try {
           const r = await timestampProvider({ signature: cose.signatureBytes, payload: cose.payloadBytes });
           timestamp = r ? { trusted: Boolean(r.trusted), at: r.at || null } : null;
