@@ -4,7 +4,7 @@
  * three network layers against a transport. This file IS that transport:
  *
  *   buildPath(certificates)          X.509 chain building, anchor matching
- *   revocationStatus(certificates)   CRL lookup
+ *   revocationStatus(certificates)   CRL lookup and signature verification
  *   verifyTimestamp({signature})     RFC 3161 countersignature status
  *
  * WHAT CHANGED IN THIS REVISION (Phase 05)
@@ -27,7 +27,7 @@
  *
  * STILL NOT IMPLEMENTED, stated so nobody has to discover it:
  *   · name constraints, policy constraints, path length constraints
- *   · CRL signature verification
+ *   · CRL distribution-point discovery beyond the configured crlUrls map
  *
  * A transport that cannot do a step reports that step as failed. It never
  * reports success for work it did not do.
@@ -36,7 +36,7 @@
 import { verifyTimestampResponse } from "./c2pa-tsr.js";
 import { verifyCertificateSignature } from "./x509-parser.js";
 
-export const TRANSPORT_VERSION = "trust/transport@0.4";
+export const TRANSPORT_VERSION = "trust/transport@0.5";
 
 /* ================================================================== *
  * DER — just enough ASN.1 to read a certificate and a CRL
@@ -102,7 +102,7 @@ function derTime(bytes, tlv) {
     return `${year}-${text.slice(2, 4)}-${text.slice(4, 6)}T${text.slice(6, 8)}:${text.slice(8, 10)}:${text.slice(10, 12)}Z`;
   }
   if (tlv.tag === 0x18 && text.length >= 14) {
-    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}T${text.slice(8, 10)}:${text.slice(10, 12)}:${text.slice(12, 14)}Z`;
+    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}T${text.slice(8, 10)}:${text.slice(12, 14)}Z`;
   }
   return null;
 }
@@ -321,6 +321,42 @@ export function checkCrl(crlDer, serialHex) {
   return { revoked, reason: revoked ? "the serial appears in the CRL" : "the serial does not appear in the CRL" };
 }
 
+/** Verify a CRL's signature against the public key of its issuer.
+ *  A CRL whose signature does not verify is not evidence of revocation. */
+export async function verifyCrlSignature(crlDer, issuerCertificate) {
+  const bytes = crlDer instanceof Uint8Array ? crlDer : new Uint8Array(crlDer);
+  const crl = derSequence(bytes, 0);
+  if (!crl) return { ok: false, reason: "the CRL did not parse" };
+  const kids = derChildren(bytes, crl);
+  const tbs = kids[0];
+  if (!tbs || tbs.tag !== 0x30) return { ok: false, reason: "the CRL has no tbsCertList" };
+
+  const algSeq = kids[1] && kids[1].tag === 0x30 ? kids[1] : null;
+  const algorithm = algSeq ? derOid(bytes, derChildren(bytes, algSeq)[0] || algSeq) : null;
+  const sigBits = kids.find((k) => k.tag === 0x03);
+  const signature = sigBits ? bytes.slice(sigBits.valueStart + 1, sigBits.valueEnd) : null;
+  if (!algorithm || !signature) {
+    return { ok: false, reason: "the CRL carries no verifiable signature material" };
+  }
+
+  const issuer = parseCertificate(issuerCertificate);
+  if (!issuer.ok) return { ok: false, reason: "the issuer certificate did not parse: " + issuer.reason };
+  if (!issuer.spki) return { ok: false, reason: "the issuer certificate carries no public key" };
+
+  const result = await verifyCertificateSignature(
+    bytes.slice(tbs.start, tbs.end),
+    signature,
+    issuer.spki,
+    algorithm,
+  );
+  return {
+    ok: Boolean(result.ok),
+    reason: result.ok
+      ? "the CRL signature verifies against the issuer certificate"
+      : "the CRL signature does not verify against the issuer certificate: " + result.reason,
+  };
+}
+
 /* ================================================================== *
  * The transport
  * ================================================================== */
@@ -331,12 +367,23 @@ export function checkCrl(crlDer, serialHex) {
  *   trustAnchors   configured anchor names, e.g. ["Example Root CA"]
  *   crlUrls        optional map from issuer hex -> URL, when the certificate
  *                  does not carry a CRL distribution point
+ *   crlIssuerCertificates
+ *                  optional map from issuer hex -> issuer certificate DER,
+ *                  used to verify the signature of the fetched CRL
  *   referenceTime  ISO string used for expiry evaluation
  *   tsaPublicKey   SPKI bytes of the timestamp authority, when known
  *   verifyToken    the second certification step; defaults to c2pa-tsr.js
  */
 export function createTransport(options = {}) {
-  const { http, trustAnchors = [], crlUrls = {}, referenceTime, tsaPublicKey, verifyToken } = options;
+  const {
+    http,
+    trustAnchors = [],
+    crlUrls = {},
+    crlIssuerCertificates = {},
+    referenceTime,
+    tsaPublicKey,
+    verifyToken,
+  } = options;
 
   return {
     version: TRANSPORT_VERSION,
@@ -347,7 +394,7 @@ export function createTransport(options = {}) {
 
     async revocationStatus(certificates) {
       if (typeof http !== "function") {
-        return { revoked: false, checked: 0, reason: "no http function is configured, so no CRL was fetched" };
+        return { revoked: false, checked: 0, signatureVerified: false, reason: "no http function is configured, so no CRL was fetched" };
       }
       let checked = 0, note = "";
       for (const der of certificates.slice(0, 3)) {
@@ -359,15 +406,47 @@ export function createTransport(options = {}) {
           const res = await http({ method: "GET", url, headers: {}, body: null });
           if (!res || res.status !== 200 || !res.body) continue;
           checked++;
-          const crl = checkCrl(new Uint8Array(res.body), parsed.serial);
+          const crlBytes = new Uint8Array(res.body);
+          const issuerCert = crlIssuerCertificates[parsed.issuer];
+          let signatureVerified = false;
+          if (issuerCert) {
+            const verified = await verifyCrlSignature(crlBytes, issuerCert);
+            signatureVerified = Boolean(verified.ok);
+            if (!verified.ok) {
+              return {
+                revoked: false,
+                checked,
+                signatureVerified,
+                reason: "the CRL signature did not verify, so it cannot establish revocation: " + verified.reason,
+              };
+            }
+          } else {
+            return {
+              revoked: false,
+              checked,
+              signatureVerified,
+              reason: "no issuer certificate was configured for the CRL, so its signature could not be verified",
+            };
+          }
+          const crl = checkCrl(crlBytes, parsed.serial);
           if (crl.revoked) {
-            return { revoked: true, checked, reason: "certificate " + parsed.serial + " appears in the CRL" };
+            return {
+              revoked: true,
+              checked,
+              signatureVerified,
+              reason: "certificate " + parsed.serial + " appears in a signature-verified CRL",
+            };
           }
         } catch (err) {
           note = "a CRL fetch failed: " + (err && err.message || String(err));
         }
       }
-      return { revoked: false, checked, reason: note || (checked ? "no certificate appeared in any fetched CRL" : "no CRL distribution point was available") };
+      return {
+        revoked: false,
+        checked,
+        signatureVerified: false,
+        reason: note || (checked ? "no certificate appeared in any fetched CRL" : "no CRL distribution point was available"),
+      };
     },
 
     async verifyTimestamp({ signature, payload, timestampToken }) {
@@ -416,6 +495,8 @@ export function createOfflineTransport(options = {}) {
   return createTransport({
     http: undefined,
     trustAnchors: options.trustAnchors || [],
+    crlUrls: options.crlUrls || {},
+    crlIssuerCertificates: options.crlIssuerCertificates || {},
     referenceTime: options.referenceTime,
     tsaPublicKey: options.tsaPublicKey,
     verifyToken: options.verifyToken,
